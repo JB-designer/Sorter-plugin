@@ -159,7 +159,6 @@ function renderThumb(item) {
     frame.target = "_blank";
     frame.rel = "noreferrer noopener";
     frame.tabIndex = -1;
-    frame.setAttribute("aria-hidden", "true");
   }
   const letter = el("span", "ph", firstLetter(item.title));
   frame.appendChild(letter);
