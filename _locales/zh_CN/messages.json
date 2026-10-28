@@ -1,0 +1,5 @@
+{
+  "extName": { "message": "卡片排序" },
+  "extDescription": { "message": "按下载量、点赞数、浏览量或日期，为列表页上的卡片排序；可读取多页，支持多条排序条件。" },
+  "actionTitle": { "message": "卡片排序" }
+}
