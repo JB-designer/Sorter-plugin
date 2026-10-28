@@ -1735,15 +1735,62 @@
     }
     if (!title) title = normalizeText(card.textContent).slice(0, 80);
 
-    var image = card.querySelector("img,source");
-    if (image) {
-      var src = image.getAttribute("src") || image.getAttribute("data-src") ||
-        image.getAttribute("data-original") || image.getAttribute("data-lazy-src") ||
-        image.getAttribute("data-thumb") ||
-        (normalizeText(image.getAttribute("srcset") || image.getAttribute("data-srcset")).split(",")[0] || "").split(" ")[0];
-      thumbnail = absoluteUrl(src, pageUrl);
-    }
+    thumbnail = pickThumbnail(card, pageUrl);
     return { title: title, url: url, thumbnail: thumbnail };
+  }
+
+  // 懒加载图片在没滚到、或后台读取(不跑网站脚本)时,src 只是一张共用的占位图,
+  // 真图地址在 data-src 这类属性里,所以先看这些属性。
+  var LAZY_IMAGE_ATTRS = ["data-src", "data-original", "data-lazy-src", "data-lazy", "data-url", "data-thumb"];
+  var PLACEHOLDER_FILE_RE = /placeholder|lazy|loading|blank|spacer|transparent|pixel|default[-_]?(img|image|thumb|cover)/i;
+  var DECORATIVE_IMAGE_RE = /avatar|gravatar|icon|logo|emoji|badge/i;
+  var DECORATIVE_MAX_SIZE = 48;
+
+  // 宁可没有预览图(结果页显示首字色块),也不要占位图、头像、小图标这类假封面
+  function pickThumbnail(card, pageUrl) {
+    var images = card.querySelectorAll("img,source");
+    for (var i = 0; i < images.length; i += 1) {
+      if (isDecorativeImage(images[i])) continue;
+      var found = imageUrl(images[i], pageUrl);
+      if (found) return found;
+    }
+    return "";
+  }
+
+  function imageUrl(image, pageUrl) {
+    var candidates = LAZY_IMAGE_ATTRS.map(function (name) { return image.getAttribute(name); });
+    candidates.push(firstSrcsetUrl(image.getAttribute("data-srcset")));
+    candidates.push(image.getAttribute("src"));
+    candidates.push(firstSrcsetUrl(image.getAttribute("srcset")));
+    for (var i = 0; i < candidates.length; i += 1) {
+      var found = absoluteUrl(candidates[i], pageUrl);
+      if (found && !isPlaceholderUrl(found)) return found;
+    }
+    return "";
+  }
+
+  function firstSrcsetUrl(value) {
+    return (normalizeText(value).split(",")[0] || "").trim().split(" ")[0];
+  }
+
+  function isPlaceholderUrl(value) {
+    if (/^(data|blob):/i.test(value)) return true;
+    var file = "";
+    try {
+      file = new URL(value).pathname.split("/").pop() || "";
+    } catch (e) {
+      return true;
+    }
+    return /\.svg$/i.test(file) || PLACEHOLDER_FILE_RE.test(file);
+  }
+
+  function isDecorativeImage(image) {
+    var width = parseFloat(image.getAttribute("width"));
+    var height = parseFloat(image.getAttribute("height"));
+    if ((width > 0 && width <= DECORATIVE_MAX_SIZE) || (height > 0 && height <= DECORATIVE_MAX_SIZE)) return true;
+    var src = image.getAttribute("src") || "";
+    var file = src.split(/[?#]/)[0].split("/").pop() || "";
+    return DECORATIVE_IMAGE_RE.test(image.getAttribute("class") || "") || DECORATIVE_IMAGE_RE.test(file);
   }
 
   function absoluteUrl(value, baseUrl) {

@@ -168,7 +168,11 @@ function renderThumb(item) {
     img.decoding = "async";
     img.alt = "";
     img.referrerPolicy = "no-referrer";
-    img.addEventListener("load", () => { letter.remove(); });
+    // 占位图、小图标也会"加载成功",太小的图一律当作没有图,保留首字色块
+    img.addEventListener("load", () => {
+      if (img.naturalWidth < 48 || img.naturalHeight < 48) img.remove();
+      else letter.remove();
+    });
     img.addEventListener("error", () => { img.remove(); });
     img.src = item.thumbnailUrl;
     frame.appendChild(img);

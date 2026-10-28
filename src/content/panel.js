@@ -1791,6 +1791,9 @@
           img.alt = "";
           img.decoding = "async";
           img.addEventListener("error", function () { img.remove(); });
+          img.addEventListener("load", function () {
+            if (img.naturalWidth < 48 || img.naturalHeight < 48) img.remove();
+          });
           img.src = item.thumbnailUrl;
           row.appendChild(img);
         }
