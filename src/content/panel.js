@@ -1058,6 +1058,8 @@
   }
 
   function contentSignature(item) {
+    // 读不到卡片链接时不能拿空网址去比(会变成当前页地址,所有卡片都"一样")→ 用标题 + 预览图
+    if (!item.videoUrl) return "~" + (item.title || "") + "|" + (item.thumbnailUrl || "");
     try {
       var url = new URL(item.videoUrl || "", location.href);
       var idParams = ["id", "vid", "video_id", "v"];

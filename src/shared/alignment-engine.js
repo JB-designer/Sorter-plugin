@@ -24,6 +24,7 @@
   var MIN_CLUSTER_SIZE = 3;
   var COVERAGE_KEEP = 0.3;   // 低于此覆盖率的 slot 视为噪音,直接丢弃
   var COVERAGE_TRUST = 0.6;  // 达到此覆盖率且类型可靠才允许预勾选
+  var COVERAGE_SPLIT = 0.1;  // 被拆开的同一字段里较小的那一块:低于 COVERAGE_KEEP 也先留着,只用来并进大的那块
   var TYPE_RATIO = 0.75;     // slot 内值可按同一类型解析的最低比例
 
   /* ---------------------------------------------------------------- *
@@ -1057,11 +1058,27 @@
       var candidate = buildCandidate(groupPath, groups[groupPath], total, counter);
       if (candidate) candidates.push(candidate);
     }
+    // 覆盖不到 COVERAGE_KEEP 的小块单独建(编号另算,不影响上面字段的 id),只用来并进同一种数据的大字段
+    var minor = [];
+    var minorCounter = { n: 0 };
+    for (var minorPath in groups) {
+      var share = groups[minorPath].length / total;
+      if (share >= COVERAGE_KEEP || groups[minorPath].length < 2) continue;
+      var piece = buildCandidate(minorPath, groups[minorPath], total, minorCounter, COVERAGE_SPLIT);
+      if (piece) minor.push(piece);
+    }
 
     candidates = mergeSameValues(candidates);
-    dedupeAttrEcho(candidates);
     dropDuplicateGuessedNames(candidates);
     hideNonMeasures(candidates);
+    // 小块也先过一遍"不值得排"(编号、别的数字拆出来的碎片),免得把碎片并进真字段
+    var everything = candidates.concat(minor);
+    minor.forEach(function (piece) {
+      if (piece.excluded || !piece._values || piece.type !== "number") return;
+      if (nonMeasureReason(piece, everything)) piece.excluded = true;
+    });
+    candidates = mergeSplitFields(candidates, minor);
+    dedupeAttrEcho(candidates);
     candidates.forEach(function (candidate) { delete candidate._values; delete candidate._texts; });
     candidates.sort(compareCandidates);
     return candidates;
@@ -1094,6 +1111,68 @@
       if (winner === candidate) kept[kept.indexOf(twin)] = candidate;
     }
     return kept;
+  }
+
+  // 同一个数字因为前面多了或少了一个元素(比如有的卡片多一个分类标签)落在不同位置,被拆成了两个字段。
+  // 两个字段认出是同一种数据、类型相同、名字一致,并且从不在同一张卡片上给出不同的数 → 合成一个字段,
+  // 其余位置记在 altPaths 里,读卡片时依次试。拿不准就不合并。
+  function mergeSplitFields(candidates, minor) {
+    var kept = [];
+    candidates.concat(minor || []).forEach(function (candidate) {
+      var isMinor = minor && minor.indexOf(candidate) >= 0;
+      var host = null;
+      if (splitMergeable(candidate)) {
+        for (var k = 0; k < kept.length && !host; k += 1) {
+          if (splitMergeable(kept[k]) && splitPartners(kept[k], candidate)) host = kept[k];
+        }
+      }
+      if (!host) {
+        if (!isMinor) kept.push(candidate);
+        return;
+      }
+      var big = !isMinor && candidate.coverage.count > host.coverage.count ? candidate : host;
+      var small = big === host ? candidate : host;
+      big.altPaths = (big.altPaths || []).concat([slotSpecOf(small)], small.altPaths || []);
+      for (var key in small._values) {
+        if (!(key in big._values)) big._values[key] = small._values[key];
+      }
+      big.coverage = { count: Object.keys(big._values).length, total: big.coverage.total };
+      big.examples = big.examples.concat(small.examples).slice(0, 3);
+      big.preChecked = big.preChecked || (!big.suspect && big.coverage.count / big.coverage.total >= COVERAGE_TRUST);
+      if (big === candidate) kept[kept.indexOf(host)] = candidate;
+    });
+    return kept;
+  }
+
+  function splitMergeable(candidate) {
+    return !candidate.excluded && Boolean(candidate._values) && Boolean(candidate.canonicalId) &&
+      candidate.source !== "icon" && candidate.kind !== "attr";
+  }
+
+  function splitPartners(a, b) {
+    if (a.canonicalId !== b.canonicalId || a.type !== b.type || a.kind !== b.kind) return false;
+    var left = normalizeText(a.siteLabel).toLowerCase();
+    var right = normalizeText(b.siteLabel).toLowerCase();
+    if (left && right && left !== right) return false;
+    // 同一张卡片上两个位置都有数:必须是同一个数(只是写了两遍),不同就是两种数据("今日"和"总计")
+    for (var key in b._values) {
+      if (!(key in a._values)) continue;
+      var x = typeof a._values[key] === "string" ? Date.parse(a._values[key]) : a._values[key];
+      var y = typeof b._values[key] === "string" ? Date.parse(b._values[key]) : b._values[key];
+      if (typeof x !== "number" || typeof y !== "number" || isNaN(x) || isNaN(y)) return false;
+      if (Math.abs(x - y) > Math.max(Math.abs(x), Math.abs(y)) * 0.05) return false;
+    }
+    return true;
+  }
+
+  function slotSpecOf(candidate) {
+    return {
+      path: candidate.path,
+      textIndex: candidate.textIndex,
+      kind: candidate.kind,
+      attr: candidate.attr || "",
+      pairLabel: candidate.pairLabel || ""
+    };
   }
 
   /* 不值得排的数字挪到"这些不能排"(excluded),不删:用户手动点选时还能拿回来。四条规则(James 2026-10-27 确认):
@@ -1300,9 +1379,9 @@
     }
   }
 
-  function buildCandidate(path, entries, totalCards, counter) {
+  function buildCandidate(path, entries, totalCards, counter, minCoverage) {
     var coverage = entries.length / totalCards;
-    if (coverage < COVERAGE_KEEP) return null;
+    if (coverage < (minCoverage || COVERAGE_KEEP)) return null;
 
     // slot key 形态:elementPath | elementPath~textIndex | elementPath@attr | elementPath~i#pairLabel
     var pairIndex = path.indexOf("#");
@@ -1661,25 +1740,16 @@
       for (var s = 0; s < slotDefs.length; s += 1) {
         var def = slotDefs[s];
         if (def.excluded || def.enabled === false) continue;
-        var element = resolvePath(card, def.path);
-        if (!element) continue;
-        var raw;
-        if (def.kind === "attr" && def.attr === RATING_ATTR) {
-          var rated = ratingFromElement(element);
-          raw = rated == null ? "" : String(rated);
-        } else if (def.kind === "attr") {
-          raw = normalizeText(element.getAttribute && element.getAttribute(def.attr));
-        } else if (def.textIndex != null) {
-          raw = nthTextOf(element, def.textIndex);
-        } else {
-          raw = ownTextOf(element); // v1 规则兼容:元素级 slot
+        // 被拆开又合并的字段:主位置没有数就依次试其余位置
+        var specs = [def].concat(def.altPaths || []);
+        var raw = "";
+        var value = null;
+        for (var p = 0; p < specs.length && value == null; p += 1) {
+          raw = readSlotText(card, specs[p]);
+          value = raw ? parseByType(raw, def.type, now) : null;
+          if (typeof value === "number" && isNaN(value)) value = null;
         }
-        if (raw && def.kind === "pair" && def.pairLabel) {
-          raw = findPairValue(raw, def.pairLabel);
-        }
-        if (!raw) continue;
-        var value = parseByType(raw, def.type, now);
-        if (value == null || (typeof value === "number" && isNaN(value))) continue;
+        if (value == null) continue;
         metrics[def.id] = value;
         metricRaw[def.id] = raw;
         // 规范别名:日期范围过滤/时长依赖固定键,取第一个启用的日期/时长 slot
@@ -1704,6 +1774,41 @@
     return items;
   }
 
+  function readSlotText(card, spec) {
+    var element = resolvePath(card, spec.path);
+    if (!element) return "";
+    var raw;
+    if (spec.kind === "attr" && spec.attr === RATING_ATTR) {
+      var rated = ratingFromElement(element);
+      raw = rated == null ? "" : String(rated);
+    } else if (spec.kind === "attr") {
+      raw = normalizeText(element.getAttribute && element.getAttribute(spec.attr));
+    } else if (spec.textIndex != null) {
+      raw = nthTextOf(element, spec.textIndex);
+    } else {
+      raw = ownTextOf(element); // v1 规则兼容:元素级 slot
+    }
+    if (raw && spec.kind === "pair" && spec.pairLabel) {
+      raw = findPairValue(raw, spec.pairLabel);
+    }
+    return raw || "";
+  }
+
+  // 整张卡片本身就是一个链接(<a> 包住图片、标题、数字),或卡片外面单独包着一个链接 → 这就是卡片的链接
+  function ownCardLink(card) {
+    var candidates = [card];
+    var parent = card.parentElement;
+    if (parent && parent.children && parent.children.length === 1) candidates.push(parent);
+    for (var i = 0; i < candidates.length; i += 1) {
+      var node = candidates[i];
+      if ((node.tagName || "").toLowerCase() !== "a") continue;
+      var href = node.getAttribute("href") || "";
+      if (!href || href.charAt(0) === "#" || /^javascript:/i.test(href)) continue;
+      return node;
+    }
+    return null;
+  }
+
   function extractIdentity(card, pageUrl) {
     var title = "";
     var url = "";
@@ -1713,9 +1818,10 @@
     if (titleEl) title = normalizeText(titleEl.textContent);
 
     var anchors = card.querySelectorAll("a[href]");
-    var bestAnchor = null;
+    var ownLink = ownCardLink(card);
+    var bestAnchor = ownLink;
     var bestScore = -1;
-    for (var i = 0; i < anchors.length; i += 1) {
+    for (var i = 0; i < anchors.length && !ownLink; i += 1) {
       var href = anchors[i].getAttribute("href") || "";
       if (!href || href.charAt(0) === "#" || /^javascript:/i.test(href)) continue;
       var text = normalizeText(anchors[i].textContent || anchors[i].getAttribute("title") || "");

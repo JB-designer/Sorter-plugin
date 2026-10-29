@@ -48,6 +48,7 @@ export function makeRule({ url, cardSignature = "", candidates = [], existing = 
       kind: candidate.kind,
       attr: candidate.attr || "",
       pairLabel: candidate.pairLabel || "",
+      altPaths: candidate.altPaths || [],
       type: candidate.type,
       siteLabel: candidate.siteLabel || "",
       label: candidate.label || candidate.siteLabel || "",
