@@ -1,6 +1,6 @@
 {
-  "name": "card-metric-sorter",
-  "version": "0.9.3",
+  "name": "advanced-card-sort",
+  "version": "0.9.4",
   "private": true,
   "type": "module",
   "scripts": {

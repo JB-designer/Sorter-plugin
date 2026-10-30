@@ -50,7 +50,7 @@ function plural(n, one, many) {
 }
 
 const ZH = {
-  name: "卡片排序",
+  name: "多级排序 — 多属性网页卡片排序",
   minimize: "收起",
   preparing: "正在准备…",
   scanning: "正在识别卡片…",
@@ -219,7 +219,7 @@ const ZH = {
   pickMissed: "未点中，请重试。",
 
   resultsTitle: "排序结果",
-  resultsDocTitle: "排序结果 · 卡片排序",
+  resultsDocTitle: "排序结果 · 多级排序 — 多属性网页卡片排序",
   resultsHeading: ({ n, pages, whole }) => `${n} 张卡片${pages ? ` · ${pages}` : ""}${whole ? "（全部）" : ""}`,
   resultsTabTitle: ({ n, source }) => `${n} 张卡片 · ${source}`,
   from: "来自 ",
@@ -228,11 +228,11 @@ const ZH = {
   noteSkipped: (pages) => `⚠ 已跳过第 ${pageList(pages)} 页`,
   noteSlow: "⚠ 网站限制了读取速度",
   noteMerged: (n) => `ⓘ ${n} 张重复卡片（链接和标题相同）只显示一次`,
-  noResults: "暂无结果。请回到要排序的网页，打开卡片排序并点击排序按钮。"
+  noResults: "暂无结果。请回到要排序的网页，打开「多级排序 — 多属性网页卡片排序」并点击排序按钮。"
 };
 
 const EN = {
-  name: "Card Sorter",
+  name: "Advanced Card Sort",
   minimize: "Minimize",
   preparing: "Getting ready…",
   scanning: "Scanning for cards…",
@@ -401,7 +401,7 @@ const EN = {
   pickMissed: "Missed. Try again.",
 
   resultsTitle: "Sorted results",
-  resultsDocTitle: "Sorted results · Card Sorter",
+  resultsDocTitle: "Sorted results · Advanced Card Sort",
   resultsHeading: ({ n, pages, whole }) => `${n} ${plural(n, "card", "cards")}${pages ? ` · ${pages}` : ""}${whole ? " (whole list)" : ""}`,
   resultsTabTitle: ({ n, source }) => `${n} ${plural(n, "card", "cards")} · ${source}`,
   from: "From ",
@@ -410,7 +410,7 @@ const EN = {
   noteSkipped: (pages) => `⚠ Skipped ${plural(pages.length, "page", "pages")} ${pageList(pages, { and: true })}`,
   noteSlow: "⚠ Rate-limited by site",
   noteMerged: (n) => `ⓘ ${n} duplicate ${plural(n, "card", "cards")} (same link and title) shown once`,
-  noResults: "No results yet. Go back to the page, open Card Sorter, and click Sort."
+  noResults: "No results yet. Go back to the page, open Advanced Card Sort, and click Sort."
 };
 
 export const STRINGS = { zh: ZH, en: EN };
