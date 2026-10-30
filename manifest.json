@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_extName__",
   "default_locale": "en",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "homepage_url": "https://github.com/JB-designer/Sorter-plugin",
   "action": {
     "default_title": "__MSG_actionTitle__"

@@ -54,3 +54,10 @@ html, body { margin: 0; background: var(--page); color: var(--text);
 .hidden { display: none !important; }
 @media (max-width: 640px) { .res { margin: 0; border-radius: 0; border-left: 0; border-right: 0; } }
 .fi{display:inline-block;width:1.05em;height:1.05em;vertical-align:-.17em;object-fit:contain;margin:0 .15em}
+/* 底部署名:卡片外、页面底色上,默认安静,悬停变链接色并出现浅底;不加下划线 */
+.credit { max-width: 1180px; margin: 0 auto; padding: 0 16px 20px; text-align: center; font-size: 11px; line-height: 16px; }
+.credit a { display: inline-block; padding: 2px 8px; border-radius: 6px; color: var(--text3); text-decoration: none; }
+.credit a:hover { color: var(--link); background: var(--surface); }
+.credit a:focus-visible { color: var(--link); }
+.credit .ext { margin-left: 3px; }
+@media (max-width: 640px) { .credit { padding-top: 12px; } }

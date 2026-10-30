@@ -14,6 +14,7 @@ import { t, isZh } from "./src/core/i18n.js";
 document.documentElement.lang = isZh ? "zh-CN" : "en";
 document.title = t("resultsDocTitle");
 document.getElementById("emptyState").textContent = t("noResults");
+document.getElementById("creditLink").firstChild.nodeValue = t("credit");
 
 const refs = {
   titleLine: document.getElementById("titleLine"),

@@ -229,6 +229,7 @@ const ZH = {
   noteSkipped: (pages) => `⚠ 已跳过第 ${pageList(pages)} 页`,
   noteSlow: "⚠ 网站限制了读取速度",
   noteMerged: (n) => `ⓘ ${n} 张重复卡片（链接和标题相同）只显示一次`,
+  credit: "多级排序 by James",
   noResults: "暂无结果。请回到要排序的网页，打开「多级排序 — 多属性网页卡片排序」并点击排序按钮。"
 };
 
@@ -411,6 +412,7 @@ const EN = {
   noteSkipped: (pages) => `⚠ Skipped ${plural(pages.length, "page", "pages")} ${pageList(pages, { and: true })}`,
   noteSlow: "⚠ Rate-limited by site",
   noteMerged: (n) => `ⓘ ${n} duplicate ${plural(n, "card", "cards")} (same link and title) shown once`,
+  credit: "Advanced Card Sort by James",
   noResults: "No results yet. Go back to the page, open Advanced Card Sort, and click Sort."
 };
 
