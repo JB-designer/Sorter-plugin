@@ -3,6 +3,7 @@
   "name": "__MSG_extName__",
   "default_locale": "en",
   "version": "0.9.4",
+  "homepage_url": "https://github.com/JB-designer/Sorter-plugin",
   "action": {
     "default_title": "__MSG_actionTitle__"
   },

@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 import {
   normalizeText,
   parseDate,

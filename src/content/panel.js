@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * Advanced Card Sort — 页面内悬浮面板 v0.8(样稿 v7:F1–F8,配色 A「睡莲」)
  *

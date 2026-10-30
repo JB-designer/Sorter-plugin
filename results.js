@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 结果页(样稿 v7 F6):纯展示。
  *   - 顶部:"120 张卡片 · 第 1–5 页"、排序说明。

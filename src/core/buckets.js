@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 分档状态(给排序和结果页用)。数学在 bands.js(方法 F7 + 3 倍规则)。
  *   - 用"所有已读的卡片"计算,每读一页、每次排序都重算(不再只看前 60 张)。

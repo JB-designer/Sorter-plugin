@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 站点规则存储:用户勾选后的字段配置,按 "origin + 路径骨架" 保存。
  *

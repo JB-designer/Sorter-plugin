@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 结果的展示结构(结果页和面板里的"前几张"共用;纯函数,方便测试):
  *   - 第一个排序依据分档时,每档开头一条细线:"下载量 40,000–49,999 · 3 张卡片";

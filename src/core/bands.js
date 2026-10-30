@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 自适应分档(方法 F7,团队第 6 轮选定,James 确认 3 倍规则):
  *   - 卡片少于 10 张,或不同数值不超过 7 个 → 不分档,按准确数字排(开关隐藏)。

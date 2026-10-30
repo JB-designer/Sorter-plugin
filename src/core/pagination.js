@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 翻页模板推导:从页面上的数字分页链接反推 "第 n 页的网址长什么样"。
  * 支持两大形态,并按可信度排序返回多个候选,调用方逐一验证:

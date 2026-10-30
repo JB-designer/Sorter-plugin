@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 通用规则 adapter:crawler 抓回的 HTML 用对齐引擎 + 站点规则解析。
  * 依赖 globalThis.CardSorterEngine(须先以 <script src> 加载 alignment-engine.js)。

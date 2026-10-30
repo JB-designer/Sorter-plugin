@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 const NUMBER_UNITS = [
   { suffix: "亿", multiplier: 100000000 },
   { suffix: "億", multiplier: 100000000 },

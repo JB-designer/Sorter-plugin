@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 界面文案(英文 + 中文)。英文是默认;Chrome 设成中文的人看到中文。
  * 文案来自 copy deck v2 第 3 轮(english-copy/round3),两种语言各自按意思写,不是互译。

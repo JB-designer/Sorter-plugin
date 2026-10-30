@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 读取范围控件(样稿 F1 方案 A / F2 / F3 / F4)的全部逻辑,纯函数,方便测试。
  *   "从第 S 页读到第 [− E +] 页"  ·  "−10 页 / +10 页"  ·  "只排这一页"  ·  "全部 N 页" 或 "读到列表末尾"

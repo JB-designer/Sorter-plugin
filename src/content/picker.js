@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 页面取点器:用户直接点击页面上想用来排序的数字/日期。
  * - caretRangeFromPoint 精确定位到点击的那个文本节点(不再猜元素)

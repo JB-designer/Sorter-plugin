@@ -1,3 +1,4 @@
+// Advanced Card Sort · https://github.com/JB-designer/Sorter-plugin · MIT License
 /*
  * 页面提取入口(content script,须与 alignment-engine.js 一同注入)。
  * side panel 通过 chrome.scripting.executeScript 调用 globalThis.__cardSorter.*
