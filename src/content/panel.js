@@ -51,6 +51,11 @@
     menuIndex: -1,           // 打开着数字菜单的规则序号
     lastResultId: null,      // 最近一次排序的结果缓存 id;有值且无任何改动时,前 5 名下面显示「打开完整结果」
     setupFolded: false,      // 排好后设置区收成一行摘要,点「修改」展开
+    readTab: "pages",        // 读取范围的两个标签:"pages" 按页数 / "cards" 按卡片数(没有页码时默认按卡片数)
+    cardTarget: 100,         // 按卡片数读取的目标张数
+    cardsLastPage: null,     // 有页码的网站按卡片数读取时,本次读到的最后一页
+    pendingDoneTitle: null,  // 下一次排序完成时"已排序"那一行要显示的文字(按卡片数读取时说明停下的原因)
+    scroll: null,            // 没有页码时的滚动读取:{ phase, cause, collector, ... },见「按卡片数读取」
     anchor: null             // 面板/胶囊的位置(src/core/panel-position.js),拖动松手时保存
   };
 
@@ -87,6 +92,7 @@
       resultView: await import(url("src/core/result-view.js")),
       crawler: await import(url("src/core/crawler.js")),
       generic: await import(url("src/core/generic-adapter.js")),
+      scrollReader: await import(url("src/core/scroll-reader.js")),
       i18n: await import(url("src/core/i18n.js")),
       position: await import(url("src/core/panel-position.js"))
     };
@@ -121,6 +127,8 @@
     // 不再摆出读不到东西的翻页控件
     state.noPaging = !state.totalPages && page === 1 && !numberedPageLinks().length && !nextPageLink();
     state.pageRange = core.pageRange.createPageRange({ current: page, total: state.totalPages });
+    stopScrollSession();
+    state.readTab = state.noPaging ? "cards" : "pages";
     if (state.noPaging) {
       state.pageRange = core.pageRange.chooseThisPage(state.pageRange);
       state.dateMode = false;
@@ -366,6 +374,7 @@
 
   function rangeMode() {
     if (state.dateMode) return "date";
+    if (state.readTab === "cards") return "cards";
     var view = core.pageRange.describePageRange(state.pageRange);
     return view.thisOn ? "current" : "pages";
   }
@@ -378,8 +387,10 @@
       scopeFilters: { date: mode === "date", page: mode !== "date", all: false },
       startDate: mode === "date" ? ui.startDate.value : "",
       endDate: mode === "date" ? ui.endDate.value : "",
-      startPage: mode === "current" ? state.currentPage : range.start,
-      endPage: mode === "current" ? state.currentPage : range.end,
+      startPage: mode === "current" || mode === "cards" ? state.currentPage : range.start,
+      endPage: mode === "current" ? state.currentPage
+        : mode === "cards" ? (state.noPaging ? state.currentPage : (state.cardsLastPage || state.currentPage))
+        : range.end,
       fieldCatalog: fieldCatalog(),
       poolSize: pool().length
     };
@@ -462,6 +473,14 @@
         var readAny = pages.some(function (n) { return state.pagesData.has(n); });
         if (!readAny) return; // 什么都没读到,提示已给出
       }
+    } else if (mode === "cards") {
+      await autoRemember();
+      if (state.noPaging) {
+        await startScrollRead();
+        return; // 滚动读取自己负责排序(读满、滚到底、停止时各排一次)
+      }
+      var okCards = await collectPagesForCards();
+      if (!okCards) return;
     } else if (mode === "date") {
       if (!ui.startDate.value && !ui.endDate.value) {
         addNote({ id: "date", tone: "warn", title: t("dateRangeTitle"), body: t("dateRangeBody"), actions: [{ id: "dismiss", label: t("gotIt") }] });
@@ -541,10 +560,10 @@
 
   // 页码模式:列表比要读的页数短时不算错 —— 读到头就停、用已读的页排序;
   // 打不开的页跳过并写明页码,其余照常排序。
-  async function collectPages(pageNumbers, range) {
+  async function collectPages(pageNumbers, range, stopWhen) {
     beginCollect();
     prepareTemplates();
-    var result = await collectPagesInner(pageNumbers, { tolerant: true, range: range });
+    var result = await collectPagesInner(pageNumbers, { tolerant: true, range: range, stopWhen: stopWhen || null });
     state.lastCollectNote = result.note || null;
     endCollect(result.message);
     // 什么都没读到:用不会自动消失的提示写明(跳过、到头等说明在排好之后一起显示,见 addRunNotes)
@@ -649,6 +668,7 @@
       storePage(page, outcome.items);
       templateProven = true;
       remaining.shift();
+      if (opts && opts.stopWhen && opts.stopWhen()) { remaining = []; break; }
       await sleep(state.pageDelayMs);
     }
 
@@ -710,6 +730,7 @@
         storePage(tabPage, tabItems);
         templateProven = true;
         remaining.shift();
+        if (opts && opts.stopWhen && opts.stopWhen()) remaining = [];
       }
       // 后台读页用的那个临时标签页整次只开一个,读完马上关
       chrome.runtime.sendMessage({ type: "card-sorter-crawl-finish" });
@@ -1132,6 +1153,438 @@
     };
   }
 
+  /* ================= 按卡片数读取 ================= */
+  /*
+   * 两种情况:
+   *   - 有页码的网站:从当前页起逐页读取(和按页数读取同一套流程),读满目标张数就停,读完当前这一页。
+   *   - 没有页码的网站:插件自己往下滚动页面,边滚边收卡片(有的网站会删掉滚过去的卡片),读满就停。
+   *     插件只滚动,绝不点击页面上的任何东西,也不跳转(James 2026-11-03)。
+   *     滚到底还不够数:先把已读的卡片排好,弹窗告诉用户;用户在页面上自己加载出新卡片后自动接着读。
+   *     用户手动滚动或切换标签页时暂停,停手 3 秒 / 回到标签页后自动继续。
+   */
+
+  var SCROLL_LIMITS = { maxCards: 2000, maxSeeds: 20000 };
+  var SCROLL_KEYS = { PageDown: 1, PageUp: 1, ArrowDown: 1, ArrowUp: 1, Home: 1, End: 1, " ": 1 };
+
+  function cardKey(item) {
+    return contentSignature(item) + "|" + (item.title || "");
+  }
+
+  // 有页码的网站:逐页读取直到读满目标张数
+  async function collectPagesForCards() {
+    var target = state.cardTarget;
+    var from = state.currentPage;
+    var last = from + DATE_CRAWL_PAGE_CAP - 1;
+    if (state.totalPages) last = Math.min(last, Math.max(from, state.totalPages));
+    function counted() {
+      var seen = {};
+      var n = 0;
+      var lastPage = null;
+      for (var p = from; p <= last; p += 1) {
+        if (!state.pagesData.has(p)) continue;
+        state.pagesData.get(p).forEach(function (item) {
+          var key = cardKey(item);
+          if (!seen[key]) { seen[key] = true; n += 1; }
+        });
+        lastPage = p;
+        if (n >= target) break;
+      }
+      return { n: n, lastPage: lastPage };
+    }
+    state.lastRequested = { from: from, to: last, readToEnd: true };
+    if (counted().n < target) {
+      var missing = [];
+      for (var p = from; p <= last; p += 1) if (!state.pagesData.has(p)) missing.push(p);
+      if (missing.length) {
+        await collectPages(missing, { from: from, to: last, readToEnd: true }, function () { return counted().n >= target; });
+      }
+    }
+    var result = counted();
+    if (result.lastPage == null) return false;
+    state.cardsLastPage = result.lastPage;
+    return true;
+  }
+
+  function readVisibleCards() {
+    if (!state.rule) return [];
+    var applied = engine.applyRule(document, state.rule, { pageUrl: location.href, page: state.currentPage, limits: SCROLL_LIMITS });
+    return applied.ok ? (applied.items || []) : [];
+  }
+
+  // 收进来的卡片同步到"当前页"(排序、前 5 名、结果页都从这里取)
+  function syncScrollItems() {
+    if (!state.scroll) return;
+    storePage(state.currentPage, state.scroll.collector.items().map(function (item) { return Object.assign({}, item); }));
+  }
+
+  // 负责滚动的元素:一般是整个页面;页面本身不能滚、卡片在某个可滚动的框里时用那个框
+  function findScroller() {
+    var root = document.scrollingElement || document.documentElement;
+    if (root.scrollHeight > root.clientHeight + 40) return null; // null = 用 window
+    var best = null;
+    document.querySelectorAll("body *").forEach(function (node) {
+      if (host && (node === host || host.contains(node))) return;
+      if (node.clientHeight < 200 || node.scrollHeight <= node.clientHeight + 40) return;
+      var style = getComputedStyle(node);
+      if (!/(auto|scroll)/.test(style.overflowY)) return;
+      if (!best || node.clientHeight * node.clientWidth > best.clientHeight * best.clientWidth) best = node;
+    });
+    return best;
+  }
+
+  function scrollMetrics(scroller) {
+    if (!scroller) {
+      var root = document.scrollingElement || document.documentElement;
+      return { top: window.scrollY, height: root.scrollHeight, view: window.innerHeight };
+    }
+    return { top: scroller.scrollTop, height: scroller.scrollHeight, view: scroller.clientHeight };
+  }
+
+  function isAtBottom(scroller) {
+    var m = scrollMetrics(scroller);
+    return m.top + m.view >= m.height - 4;
+  }
+
+  function selfScroll(sc) {
+    sc.selfUntil = Date.now() + 1500;
+    var m = scrollMetrics(sc.scroller);
+    var by = Math.round(m.view * 0.85);
+    // instant:不受网站 CSS 里 scroll-behavior:smooth 的影响
+    if (sc.scroller) sc.scroller.scrollBy({ top: by, behavior: "instant" });
+    else window.scrollBy({ top: by, behavior: "instant" });
+  }
+
+  function fromPanel(event) {
+    var path = event.composedPath ? event.composedPath() : [];
+    return path.indexOf(host) >= 0;
+  }
+
+  function attachPauseListeners(sc) {
+    function manual(event) {
+      if (fromPanel(event)) return;
+      if (event.type === "keydown") {
+        if (!SCROLL_KEYS[event.key]) return;
+        var tag = (event.target && event.target.tagName) || "";
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (event.target && event.target.isContentEditable)) return;
+      }
+      pauseScroll("manual");
+    }
+    // 只认用户真的动手(滚轮、触摸、按键、拖滚动条),不看 scroll 事件:
+    // 网站加载新卡片、删掉旧卡片时自己也会挪动滚动位置,不能当成用户在滚
+    function onScrollbar(event) {
+      if (fromPanel(event)) return;
+      var root = document.documentElement;
+      if (event.clientX >= root.clientWidth || event.clientY >= root.clientHeight) pauseScroll("manual");
+      else if (sc.scroller && event.target === sc.scroller) {
+        var rect = sc.scroller.getBoundingClientRect();
+        if (event.clientX >= rect.left + sc.scroller.clientWidth) pauseScroll("manual");
+      }
+    }
+    function onVisibility() {
+      if (document.hidden) pauseScroll("tab");
+    }
+    sc.listeners = [
+      [window, "wheel", manual], [window, "touchmove", manual], [window, "keydown", manual],
+      [window, "mousedown", onScrollbar], [document, "visibilitychange", onVisibility]
+    ];
+    sc.listeners.forEach(function (l) { l[0].addEventListener(l[1], l[2], { capture: true, passive: true }); });
+  }
+
+  function detachPauseListeners(sc) {
+    (sc.listeners || []).forEach(function (l) { l[0].removeEventListener(l[1], l[2], { capture: true }); });
+    sc.listeners = null;
+  }
+
+  function pauseScroll(cause) {
+    var sc = state.scroll;
+    if (!sc || (sc.phase !== "reading" && sc.phase !== "paused")) return;
+    if (sc.phase === "paused" && sc.cause === "tab" && cause === "manual") return;
+    sc.phase = "paused";
+    sc.cause = cause;
+    var rule = core.scrollReader.resumeRule(cause);
+    sc.resumeAt = rule.afterMs ? Date.now() + rule.afterMs : 0;
+    renderNotes();
+  }
+
+  // 暂停期间:用户手动滚过的卡片也收下;到时间(或回到标签页)自动继续
+  async function waitWhilePaused(sc) {
+    var lastRead = 0;
+    while (sc.phase === "paused" && !state.collectCancelled) {
+      await sleep(250);
+      if (Date.now() - lastRead > 1000) {
+        lastRead = Date.now();
+        if (sc.collector.add(readVisibleCards())) syncScrollItems();
+        renderNotes();
+      }
+      if (sc.cause === "manual" && Date.now() >= sc.resumeAt) sc.phase = "reading";
+      if (sc.cause === "tab" && !document.hidden) sc.phase = "reading";
+    }
+    renderNotes();
+  }
+
+  // 滚一步之后等新卡片出现(最多 waitMs),返回新收到的张数
+  async function waitForNewCards(sc, waitMs) {
+    var added = 0;
+    var until = Date.now() + waitMs;
+    await sleep(400);
+    while (!state.collectCancelled && sc.phase === "reading") {
+      added += sc.collector.add(readVisibleCards());
+      if (added || Date.now() >= until) break;
+      await sleep(400);
+    }
+    if (added) syncScrollItems();
+    return added;
+  }
+
+  async function startScrollRead() {
+    var sr = core.scrollReader;
+    var sc = {
+      target: state.cardTarget,
+      collector: sr.createCollector(cardKey),
+      phase: "reading",
+      cause: "",
+      resumeAt: 0,
+      selfUntil: 0,
+      stalls: 0,
+      idleSteps: 0,
+      bottoms: 0,
+      resumedFrom: null,
+      waitFrom: 0,
+      rid: null,
+      startUrl: location.href,
+      scroller: findScroller()
+    };
+    state.scroll = sc;
+    sc.collector.add(readVisibleCards());
+    syncScrollItems();
+    await scrollLoop(sc);
+  }
+
+  async function scrollLoop(sc) {
+    var sr = core.scrollReader;
+    beginCollect();
+    attachPauseListeners(sc);
+    try {
+      while (true) {
+        if (state.scroll !== sc) return;
+        if (state.collectCancelled) { finishScroll(sc, "stopped"); return; }
+        if (location.href !== sc.startUrl) { finishScroll(sc, "updated"); return; }
+        if (sc.phase === "paused") { await waitWhilePaused(sc); continue; }
+        if (sc.collector.size >= sc.target) { finishScroll(sc, "target"); return; }
+        renderNotes();
+        var beforeTop = scrollMetrics(sc.scroller).top;
+        selfScroll(sc);
+        var moved = Math.abs(scrollMetrics(sc.scroller).top - beforeTop) > 2;
+        var added = await waitForNewCards(sc, 1600);
+        if (sc.phase === "paused") continue;
+        var atBottom = isAtBottom(sc.scroller);
+        sc.idleSteps = added ? 0 : sc.idleSteps + 1;
+        sc.stalls = added ? 0 : (!moved || atBottom ? sc.stalls + 1 : 0);
+        var decision = sr.decideAfterStep({
+          unique: sc.collector.size,
+          target: sc.target,
+          added: added,
+          atBottom: atBottom,
+          stalls: sc.stalls,
+          idleSteps: sc.idleSteps
+        });
+        if (decision === "done") { finishScroll(sc, "target"); return; }
+        if (decision === "bottom") { reachBottom(sc); return; }
+        await sleep(500);
+      }
+    } finally {
+      detachPauseListeners(sc);
+    }
+  }
+
+  // 按停下的原因排序一次;滚到底后接着读完再排时,更新同一个结果页
+  function sortScrollResult(sc, title) {
+    syncScrollItems();
+    state.pendingDoneTitle = title;
+    var rid = sc.rid;
+    if (state.lastResultId) state.lastResultId = null;
+    openResults(rid || null);
+  }
+
+  function finishScroll(sc, reason) {
+    var n = sc.collector.size;
+    sc.phase = "done";
+    stopWaitWatch(sc);
+    closeBottomModal();
+    endCollect();
+    var title;
+    if (reason === "stopped") title = t("scrollDoneStopped", n);
+    else if (reason === "updated") title = t("scrollDoneUpdated", n);
+    else if (sc.resumedFrom != null) title = t("scrollDoneMerged", { n: n, before: sc.resumedFrom, added: n - sc.resumedFrom });
+    else title = t("scrollDoneTarget", n);
+    sortScrollResult(sc, title);
+  }
+
+  // 滚到底还不够数:先排好已读的卡片,第一次滚到底时弹窗说明,然后等页面出现新卡片
+  function reachBottom(sc) {
+    var n = sc.collector.size;
+    sc.phase = "waiting";
+    sc.bottoms += 1;
+    sc.waitFrom = n;
+    sc.waitDeadline = Date.now() + core.scrollReader.WAIT_TIMEOUT_MS;
+    endCollect();
+    sortScrollResult(sc, t("scrollDoneBottom", { n: n, target: sc.target }));
+    if (sc.bottoms === 1) showBottomModal(n, sc.target);
+    startWaitWatch(sc);
+    renderAll();
+  }
+
+  function startWaitWatch(sc) {
+    var pending = null;
+    function check() {
+      if (state.scroll !== sc || sc.phase !== "waiting") return;
+      var added = sc.collector.add(readVisibleCards());
+      if (added) { resumeFromWait(sc, added); return; }
+      if (Date.now() >= sc.waitDeadline) {
+        stopWaitWatch(sc);
+        sc.phase = "done";
+        addNote({ id: "waitEnd", tone: "info", title: t("waitTimeout"), actions: [{ id: "dismiss", label: t("gotIt") }] });
+        renderAll();
+      }
+    }
+    sc.observer = new MutationObserver(function () {
+      if (pending) return;
+      pending = setTimeout(function () { pending = null; check(); }, 500);
+    });
+    sc.observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    sc.waitTimer = setInterval(check, 2000);
+  }
+
+  function stopWaitWatch(sc) {
+    if (sc.observer) { sc.observer.disconnect(); sc.observer = null; }
+    if (sc.waitTimer) { clearInterval(sc.waitTimer); sc.waitTimer = null; }
+  }
+
+  function resumeFromWait(sc, added) {
+    stopWaitWatch(sc);
+    closeBottomModal();
+    removeNote("waitEnd");
+    if (sc.resumedFrom == null) sc.resumedFrom = sc.waitFrom;
+    sc.rid = sc.rid || state.lastResultId;
+    sc.phase = "reading";
+    sc.stalls = 0;
+    sc.idleSteps = 0;
+    sc.startUrl = location.href;
+    syncScrollItems();
+    state.collectCancelled = false;
+    scrollLoop(sc).catch(function () {
+      if (state.collecting) endCollect();
+      addNote({ id: "error", tone: "warn", title: t("sortFailTitle"), body: t("tryAgain"), actions: [{ id: "dismiss", label: t("gotIt") }] });
+    });
+  }
+
+  // 等待中用户点「停止等待，完成排序」:结果已经排好,只是不再等
+  function stopWaiting() {
+    var sc = state.scroll;
+    if (!sc || sc.phase !== "waiting") return;
+    stopWaitWatch(sc);
+    closeBottomModal();
+    sc.phase = "done";
+    renderAll();
+  }
+
+  // 重新识别、重置等:结束正在进行的滚动读取
+  function stopScrollSession() {
+    var sc = state.scroll;
+    if (!sc) return;
+    stopWaitWatch(sc);
+    detachPauseListeners(sc);
+    closeBottomModal();
+    sc.phase = "done";
+    state.scroll = null;
+  }
+
+  function scrollActive() {
+    var sc = state.scroll;
+    return Boolean(sc && (sc.phase === "reading" || sc.phase === "paused" || sc.phase === "waiting"));
+  }
+
+  function showBottomModal(n, target) {
+    var dialog = ui.modal;
+    if (!dialog) return;
+    ui.modalTitle.textContent = t("bottomModalTitle");
+    ui.modalBody1.textContent = t("bottomModalBody1", { n: n, target: target });
+    ui.modalBody2.textContent = t("bottomModalBody2");
+    try {
+      if (!dialog.open) dialog.showModal();
+    } catch (e) {
+      dialog.setAttribute("open", "");
+    }
+    if (ui.modalOk) ui.modalOk.focus();
+  }
+
+  function closeBottomModal() {
+    var dialog = ui.modal;
+    if (dialog && dialog.open) {
+      try { dialog.close(); } catch (e) { dialog.removeAttribute("open"); }
+    }
+  }
+
+  // 面板顶部的读取状态条(读取中 / 暂停 / 等待新卡片)
+  function renderScrollBand() {
+    var sc = state.scroll;
+    if (!sc || !scrollActive()) return null;
+    var n = sc.collector.size;
+    if (sc.phase === "waiting") {
+      var band = el("div", "sband");
+      band.setAttribute("role", "status");
+      var head = el("div", "h");
+      head.appendChild(el("span", "pulse"));
+      head.appendChild(document.createTextNode(sc.bottoms > 1 ? t("waitingAgain", { n: n, target: sc.target }) : t("waitingTitle")));
+      band.appendChild(head);
+      band.appendChild(el("div", "b", t("waitingProgress", { n: n, target: sc.target })));
+      band.appendChild(progressBar(n, sc.target, sc.resumedFrom));
+      var stop = el("button", "btn2", t("stopWaiting"));
+      stop.setAttribute("data-act", "stopWaiting");
+      var acts = el("div", "acts");
+      acts.appendChild(stop);
+      band.appendChild(acts);
+      return band;
+    }
+    var paused = sc.phase === "paused";
+    var box = el("div", "note " + (paused ? "warn" : "info"));
+    box.setAttribute("role", "status");
+    var title;
+    if (paused) title = sc.cause === "tab" ? t("pausedTab") : t("pausedManual");
+    else title = sc.resumedFrom != null ? t("scrollResumed", { read: n, target: sc.target }) : t("scrollReading", { read: n, target: sc.target });
+    box.appendChild(el("div", "h", title));
+    if (paused) {
+      var line = sc.cause === "tab"
+        ? t("pausedKeptTab", n)
+        : t("pausedKeptManual", { n: n, s: core.scrollReader.secondsLeft(sc.resumeAt, Date.now()) });
+      box.appendChild(el("div", "b", line));
+    } else if (sc.resumedFrom != null) {
+      box.appendChild(el("div", "b", t("scrollMergeLine", { before: sc.resumedFrom, added: n - sc.resumedFrom })));
+    }
+    box.appendChild(progressBar(n, sc.target, sc.resumedFrom));
+    var stopButton = el("button", "btn2", t("stopAndSortN", n));
+    stopButton.setAttribute("data-act", "scrollStop");
+    var row = el("div", "acts");
+    row.appendChild(stopButton);
+    box.appendChild(row);
+    return box;
+  }
+
+  function progressBar(n, target, before) {
+    var bar = el("div", "pbar");
+    var pct = Math.min(100, Math.round((n / Math.max(1, target)) * 100));
+    var fill = el("i", "");
+    fill.style.width = pct + "%";
+    bar.appendChild(fill);
+    // 接着读时:之前的卡片用浅色,新读取的用深色
+    if (before != null) {
+      var kept = el("i", "kept");
+      kept.style.width = Math.min(100, Math.round((before / Math.max(1, target)) * 100)) + "%";
+      bar.appendChild(kept);
+    }
+    return bar;
+  }
+
   /* ================= 记住网站 / 点选 ================= */
 
   // silent = 读别的页之前自动记住(不打扰用户)
@@ -1408,7 +1861,8 @@
         actions: [{ id: "dismiss", label: t("gotIt") }]
       });
     }
-    addNote({ id: "done", tone: "ok", title: t("sortedTitle", count) });
+    addNote({ id: "done", tone: "ok", title: state.pendingDoneTitle || t("sortedTitle", count) });
+    state.pendingDoneTitle = null;
   }
 
   // "下载量 › 点赞数"
@@ -1442,12 +1896,12 @@
 
   var STYLE = [
     ":host{all:initial}",
-    ".panel,.bubble{--surface:#FAFAF7;--subtle:#F0F2EE;--border:#DCE0DA;--text:#1F2A2E;--text2:#485659;--text3:#5F6B6D;",
+    ".panel,.bubble,.modal{--surface:#FAFAF7;--subtle:#F0F2EE;--border:#DCE0DA;--text:#1F2A2E;--text2:#485659;--text3:#5F6B6D;",
     "--accent:#3B6577;--accentSoft:#E6EEF0;--button:#3B6577;--buttonHover:#2C4F5E;--success:#3D6B4B;--successSoft:#EAF1EA;",
     "--warning:#875414;--warningSoft:#F7EFDF;--danger:#9E3A3A;--dangerSoft:#F7E9E7;--focus:#4A5BA6;--link:#3B5C8F;--field:#FFFFFF;--onAccent:#FFFFFF;color-scheme:light}",
     // Dark palette: every colour comes from these tokens, so text and controls stay readable when the browser or a dark-mode extension darkens the page.
-    "@media (prefers-color-scheme:dark){.panel,.bubble{--surface:#1E2427;--subtle:#262E31;--border:#3A4448;--text:#E6ECEE;--text2:#B4C0C3;--text3:#93A1A4;",
-    "--accent:#8FBCCD;--accentSoft:#24363E;--button:#4C7E92;--buttonHover:#5B8EA2;--success:#8FC7A0;--successSoft:#1D2C22;",
+    "@media (prefers-color-scheme:dark){.panel,.bubble,.modal{--surface:#1E2427;--subtle:#262E31;--border:#3A4448;--text:#E6ECEE;--text2:#B4C0C3;--text3:#93A1A4;",
+    "--accent:#8FBCCD;--accentSoft:#24363E;--button:#47788C;--buttonHover:#3E6A7C;--success:#8FC7A0;--successSoft:#1D2C22;",
     "--warning:#E3C07A;--warningSoft:#33291A;--danger:#E59A92;--dangerSoft:#3A2422;--focus:#9AA8E6;--link:#9DBBE6;--field:#262E31;--onAccent:#FFFFFF;color-scheme:dark}}",
     "*{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Noto Sans SC','Microsoft YaHei',sans-serif}",
     ".panel{position:fixed;top:16px;right:16px;width:360px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto;z-index:2147483646;",
@@ -1521,7 +1975,7 @@
     ".mv button[disabled]{opacity:.35;cursor:default}",
     ".seg{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}",
     ".seg button{all:unset;flex:1;text-align:center;padding:5px 6px;font-size:12px;color:var(--text2);background:var(--field);cursor:pointer}",
-    ".seg button.on{background:var(--accent);color:var(--onAccent);font-weight:600}",
+    ".seg button.on{background:var(--button);color:var(--onAccent);font-weight:600}",
     ".seg button+button{border-left:1px solid var(--border)}",
     ".menu{border:1px solid var(--border);border-radius:10px;background:var(--field);box-shadow:0 4px 14px rgba(31,42,46,.12);overflow:hidden;margin:4px 0 8px}",
     ".mh{padding:7px 10px 4px;font-size:11px;font-weight:700;color:var(--text3);letter-spacing:.3px}",
@@ -1566,7 +2020,28 @@
     ".del{all:unset;width:20px;height:20px;line-height:18px;text-align:center;border-radius:50%;color:var(--text3);font-size:15px;cursor:pointer;position:relative;flex:none}",
     ".del:hover{color:var(--danger);background:var(--dangerSoft)}",
     ".del[data-tip]:hover::after{content:attr(data-tip);position:absolute;right:0;top:24px;white-space:nowrap;background:var(--text);color:var(--surface);font-size:11px;font-weight:400;line-height:1.4;padding:3px 7px;border-radius:5px;z-index:4;pointer-events:none}",
-    ".sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}"
+    ".sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}",
+    ".tabs{margin:0 0 10px}",
+    ".fixedv{font-weight:600}",
+    ".pbar{position:relative;height:4px;border-radius:2px;background:var(--border);overflow:hidden;margin-top:8px}",
+    ".pbar i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:2px}",
+    ".pbar i.kept{background:var(--accentSoft)}",
+    ".sband{border-radius:9px;padding:10px 12px;background:var(--button);color:var(--onAccent);font-size:12px}",
+    ".sband .h{font-weight:600;display:flex;gap:8px;align-items:flex-start}",
+    ".sband .b{margin-top:4px;opacity:.9}",
+    ".sband .pbar{background:rgba(255,255,255,.25)}.sband .pbar i{background:var(--onAccent)}.sband .pbar i.kept{background:rgba(255,255,255,.55)}",
+    ".sband .acts{margin-top:8px}.sband .btn2{color:var(--accent);border-color:var(--field)}",
+    ".pulse{width:8px;height:8px;border-radius:50%;background:var(--onAccent);flex:none;margin-top:4px;animation:pulse 1.4s ease-in-out infinite}",
+    "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}",
+    "@media (prefers-reduced-motion:reduce){.pulse{animation:none}}",
+    ".modal{border:none;border-radius:14px;padding:20px 22px;max-width:min(420px,calc(100vw - 32px));background:var(--surface);color:var(--text);box-shadow:0 12px 40px rgba(0,0,0,.3);font-size:14px;line-height:1.55}",
+    ".modal::backdrop{background:rgba(20,24,26,.55)}",
+    ".mh2{font-size:16px;font-weight:700;margin-bottom:8px}",
+    ".mb{margin:0 0 8px;color:var(--text2)}",
+    ".ma{display:flex;justify-content:flex-end;margin-top:12px}",
+    ".mok{all:unset;background:var(--button);color:var(--onAccent);border-radius:8px;padding:7px 18px;font-weight:600;cursor:pointer}",
+    ".mok:hover{background:var(--buttonHover)}",
+    ".mok:focus-visible{outline:2px solid var(--focus);outline-offset:2px}"
   ].join("\n");
 
   function buildPanel() {
@@ -1621,6 +2096,19 @@
       applyPosition();
     });
     shadow.appendChild(bubble);
+
+    // 滚到底还不够数时的弹窗:盖住整个网页(灰色背景),只有一个「知道了」;Esc 也能关,点背景不关
+    var modal = document.createElement("dialog");
+    modal.className = "modal";
+    modal.innerHTML =
+      '<div class="mh2" data-el="modalTitle"></div>' +
+      '<p class="mb" data-el="modalBody1"></p>' +
+      '<p class="mb" data-el="modalBody2"></p>' +
+      '<div class="ma"><button class="mok" data-el="modalOk">' + esc(t("gotIt")) + '</button></div>';
+    modal.querySelector(".mok").addEventListener("click", function () { closeBottomModal(); });
+    shadow.appendChild(modal);
+    modal.querySelectorAll("[data-el]").forEach(function (node) { ui[node.getAttribute("data-el")] = node; });
+    ui.modal = modal;
 
     // 选属性时盖住整个面板的半透明暗层,只有提示块在它上面
     var dim = document.createElement("div");
@@ -1743,9 +2231,21 @@
 
   function handleAction(act, target) {
     if (act === "minimize") { ui.panel.style.display = "none"; ui.bubble.style.display = ""; applyPosition(); }
-    else if (act === "redetect") { state.notes = []; detectCurrentPage(); }
+    else if (act === "redetect") { if (state.collecting) return; state.notes = []; detectCurrentPage(); }
+    else if (act === "scrollStop") cancelCollect();
+    else if (act === "stopWaiting") stopWaiting();
+    else if (act === "tab") {
+      var tab = target.getAttribute("data-tab");
+      if (tab === state.readTab) return;
+      state.readTab = tab;
+      if (tab === "cards") state.dateMode = false;
+      invalidateResultCache();
+      renderRange();
+      renderCta();
+    }
+    else if (act === "cards") cardsAction(target.getAttribute("data-op"), target);
     else if (act === "pickCancel") stopPicking();
-    else if (act === "forget") forgetSite();
+    else if (act === "forget") { if (state.collecting) return; forgetSite(); }
     else if (act === "addRule") addRule();
     else if (act === "unfold") { state.setupFolded = false; renderSetup(); }
     else if (act === "openFull") reopenResults();
@@ -1800,7 +2300,7 @@
     ui.setup.style.display = folded ? "none" : "";
     ui.fold.style.display = folded ? "" : "none";
     if (folded) {
-      var pagesText = core.resultView.describePageList(state.summary.pages);
+      var pagesText = rangeMode() === "cards" ? t("foldCards", state.summary.count) : core.resultView.describePageList(state.summary.pages);
       ui.foldText.textContent = "";
       core.resultView.appendSentence(document, ui.foldText, [summarySentence(), pagesText + (state.summary.whole ? t("wholeList") : "")].filter(Boolean).join(" · "), fieldCatalog(), { glyphOk: true });
     }
@@ -1812,6 +2312,7 @@
 
   function renderScope() {
     if (!state.cardCount) return;
+    if (state.noPaging) { setScope(t("scopeNoPaging", state.cardCount)); return; }
     setScope(core.pageRange.describeScope({ current: state.currentPage, cardCount: state.cardCount, total: state.totalPages }));
   }
 
@@ -1847,7 +2348,10 @@
       ui.notes.appendChild(box);
       if (note.id === "done" && state.summary) ui.notes.appendChild(renderTopList(state.summary));
     });
-    if (state.collecting) {
+    var scrollBand = renderScrollBand();
+    if (scrollBand) {
+      ui.notes.insertBefore(scrollBand, ui.notes.firstChild);
+    } else if (state.collecting) {
       var progress = el("div", "note info");
       progress.setAttribute("role", "status");
       progress.appendChild(el("div", "h", t("readingTitle")));
@@ -2201,15 +2705,20 @@
     box.innerHTML = "";
     if (ui.dateLink) {
       ui.dateLink.textContent = t(state.dateMode ? "readByPage" : "readByDate");
-      ui.dateLink.style.display = state.noPaging ? "none" : "";
+      ui.dateLink.style.display = state.noPaging || state.readTab === "cards" ? "none" : "";
+    }
+    if (!state.dateMode) box.appendChild(renderTabs());
+    if (!state.dateMode && state.readTab === "cards") {
+      box.className = "box";
+      renderCardsRange(box);
+      return;
     }
     if (state.noPaging) {
       box.className = "box";
-      var only = el("div", "note info");
-      only.setAttribute("role", "status");
-      only.appendChild(el("div", "h", t("noPagingTitle")));
-      only.appendChild(el("div", "b", t("noPagingBody")));
-      box.appendChild(only);
+      var fixed = el("div", "line");
+      fixed.appendChild(el("b", "fixedv", t("fixedOnePage")));
+      box.appendChild(fixed);
+      box.appendChild(el("div", "hint", t("fixedOnePageHint", state.cardCount)));
       return;
     }
     if (state.dateMode) {
@@ -2329,6 +2838,80 @@
     }
   }
 
+  function renderTabs() {
+    var seg = el("div", "seg tabs");
+    seg.setAttribute("role", "tablist");
+    [["pages", t("tabPages")], ["cards", t("tabCards")]].forEach(function (pair) {
+      var button = el("button", state.readTab === pair[0] ? "on" : "", pair[1]);
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", state.readTab === pair[0] ? "true" : "false");
+      button.setAttribute("data-act", "tab");
+      button.setAttribute("data-tab", pair[0]);
+      seg.appendChild(button);
+    });
+    return seg;
+  }
+
+  function cardsButton(className, op, text, disabled, label, value) {
+    var button = el("button", className, text);
+    button.setAttribute("data-act", "cards");
+    button.setAttribute("data-op", op);
+    if (value != null) button.setAttribute("data-value", String(value));
+    if (label) button.setAttribute("aria-label", label);
+    button.disabled = Boolean(disabled);
+    return button;
+  }
+
+  // 「按卡片数」:读取 [100] 张卡片 + 100 / 200 / 500（上限）+ 一行说明
+  function renderCardsRange(box) {
+    var sr = core.scrollReader;
+    var target = state.cardTarget;
+    var line = el("div", "line");
+    line.appendChild(document.createTextNode(t("cardsLead")));
+    var stepper = el("span", "step");
+    stepper.appendChild(cardsButton("", "minus", "−", target <= sr.CARD_TARGET_MIN, t("cardsFewer")));
+    var input = document.createElement("input");
+    input.value = String(target);
+    input.inputMode = "numeric";
+    input.setAttribute("aria-label", t("cardsTail"));
+    input.addEventListener("input", function () {
+      var digits = input.value.replace(/\D/g, "");
+      if (digits !== input.value) input.value = digits;
+    });
+    input.addEventListener("change", function () { setCardTarget(sr.clampTarget(input.value, state.cardTarget)); });
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") { event.preventDefault(); setCardTarget(sr.clampTarget(input.value, state.cardTarget)); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); setCardTarget(sr.stepTarget(state.cardTarget, sr.CARD_TARGET_STEP)); }
+      else if (event.key === "ArrowDown") { event.preventDefault(); setCardTarget(sr.stepTarget(state.cardTarget, -sr.CARD_TARGET_STEP)); }
+    });
+    stepper.appendChild(input);
+    stepper.appendChild(cardsButton("", "plus", "+", target >= sr.CARD_TARGET_MAX, t("cardsMore")));
+    line.appendChild(stepper);
+    line.appendChild(document.createTextNode(t("cardsTail")));
+    box.appendChild(line);
+    var choices = el("div", "choices");
+    sr.CARD_PRESETS.forEach(function (n) {
+      var label = n === sr.CARD_TARGET_MAX ? t("cardPresetMax", n) : t("cardPreset", n);
+      choices.appendChild(cardsButton("chip" + (target === n ? " on" : ""), "preset", label, false, null, n));
+    });
+    box.appendChild(choices);
+    box.appendChild(el("div", "hint", state.noPaging ? t("cardsHintScroll", target) : t("cardsHintPages", target)));
+  }
+
+  function cardsAction(op, target) {
+    var sr = core.scrollReader;
+    if (op === "minus") setCardTarget(sr.stepTarget(state.cardTarget, -sr.CARD_TARGET_STEP));
+    else if (op === "plus") setCardTarget(sr.stepTarget(state.cardTarget, sr.CARD_TARGET_STEP));
+    else if (op === "preset") setCardTarget(sr.clampTarget(target.getAttribute("data-value")));
+  }
+
+  function setCardTarget(value) {
+    state.cardTarget = value;
+    invalidateResultCache();
+    renderRange();
+    renderCta();
+  }
+
   function applyTypedEnd(text) {
     state.pageRange = core.pageRange.typeEnd(state.pageRange, text);
     invalidateResultCache();
@@ -2341,7 +2924,17 @@
     if (!button || !state.pageRange) return;
     button.disabled = false;
     // 刚排好且没有改动:前 5 名下面有「打开完整结果」,主按钮先藏起来;改了设置后再出现
-    button.style.display = state.lastResultId && state.summary && !state.collecting ? "none" : "";
+    button.style.display = (state.lastResultId && state.summary && !state.collecting) || scrollActive() ? "none" : "";
+    if (state.readTab === "cards" && !state.dateMode && !state.collecting) {
+      button.textContent = t("sortCards", state.cardTarget);
+      button.disabled = !state.cardCount;
+      return;
+    }
+    if (state.noPaging && !state.dateMode && !state.collecting) {
+      button.textContent = t("sortLoaded", state.cardCount);
+      button.disabled = !state.cardCount;
+      return;
+    }
     if (state.collecting) {
       button.textContent = t("stopAndSort");
       return;

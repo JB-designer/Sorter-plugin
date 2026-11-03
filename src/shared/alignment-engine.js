@@ -412,8 +412,24 @@
   var BLOCKED_IDENTITY_RE = /\b(nav|navbar|menu|header|footer|sidebar|side-bar|widget|pagination|pager|breadcrumb|popup|modal|overlay|cookie|login|signup|register|search-form|filter|dropdown|language|advert|ads?|banner|notice|toast|tooltip|suggest)\b/i;
   var BLOCKED_ANCESTOR_SELECTOR = "nav,header,footer,aside,[role='navigation'],[role='banner'],[role='contentinfo']";
 
-  function findCards(doc) {
-    var seeds = collectSeeds(doc);
+  // limits: 可选 { maxCards, maxSeeds }。按卡片数滚动读取时页面会越来越长,调用方可以放宽上限;
+  // 不传时和以前完全一样
+  // 页面有真实布局时(在浏览器里打开的页面),一组大部分都没显示出来的元素(外层 display:none,
+  // 如收起的筛选栏、弹层里的色块列表)不能当作卡片组:用户看不见,也不会想给它们排序。
+  // 只按"整组"判断,不删组里个别隐藏的卡片(排序不减少卡片)。
+  // 后台读取的页面没有布局,所有元素都"没显示",这时不做这项检查。
+  function pageHasLayout(doc) {
+    var body = doc && doc.body;
+    return !!(body && body.getClientRects && body.getClientRects().length > 0);
+  }
+
+  function notDisplayed(element) {
+    return !!(element.getClientRects && element.getClientRects().length === 0);
+  }
+
+  function findCards(doc, limits) {
+    var maxCards = (limits && limits.maxCards) || MAX_CARDS;
+    var seeds = collectSeeds(doc, (limits && limits.maxSeeds) || MAX_SEEDS);
     var scored = [];
     for (var i = 0; i < seeds.length; i += 1) {
       var candidate = scoreCandidate(seeds[i]);
@@ -425,25 +441,26 @@
     });
 
     var selected = [];
-    for (var s = 0; s < scored.length && selected.length < MAX_CARDS * 2; s += 1) {
+    for (var s = 0; s < scored.length && selected.length < maxCards * 2; s += 1) {
       insertNonOverlapping(selected, scored[s]);
     }
 
     var clusters = clusterBySignature(selected);
-    var main = pickMainCluster(clusters);
+    var main = pickMainCluster(clusters, pageHasLayout(doc));
     if (!main) return { roots: [], signature: "", clusterSizes: summarizeClusters(clusters) };
 
     var roots = main.candidates.map(function (c) { return c.element; });
     roots = promoteSplitCards(roots, selected);
     roots.sort(compareDomOrder);
     return {
-      roots: roots.slice(0, MAX_CARDS),
+      roots: roots.slice(0, maxCards),
       signature: main.signature,
       clusterSizes: summarizeClusters(clusters)
     };
   }
 
-  function collectSeeds(doc) {
+  function collectSeeds(doc, maxSeeds) {
+    var seedCap = maxSeeds || MAX_SEEDS;
     var seeds = [];
     var seen = typeof Set === "undefined" ? null : new Set();
     function add(element) {
@@ -452,7 +469,7 @@
         if (seen.has(element)) return;
         seen.add(element);
       }
-      if (seeds.length < MAX_SEEDS) seeds.push(element);
+      if (seeds.length < seedCap) seeds.push(element);
     }
 
     var structural = doc.querySelectorAll("article,li,[class*='card' i],[class*='item' i],[class*='post' i],[class*='thumb' i],[class*='cell' i],[class*='tile' i],[class*='entry' i],[class*='mod-' i],[class*='video' i],[class*='result' i]");
@@ -470,7 +487,7 @@
     // 图片包得很深(按钮、轮播里套了七八层)时,从链接往上也爬几层:
     // 整张卡片常是"一个盖住全卡的空链接 + 旁边的图片和文字"
     var anchors = doc.querySelectorAll("a[href]");
-    for (var l = 0; l < anchors.length && seeds.length < MAX_SEEDS; l += 1) {
+    for (var l = 0; l < anchors.length && seeds.length < seedCap; l += 1) {
       var up = anchors[l].parentElement;
       for (var level = 0; up && level < 3; level += 1) {
         add(up);
@@ -581,11 +598,19 @@
     return clusters;
   }
 
-  function pickMainCluster(clusters) {
+  function pickMainCluster(clusters, checkDisplay) {
     for (var i = 0; i < clusters.length; i += 1) {
-      if (clusters[i].candidates.length >= MIN_CLUSTER_SIZE) return clusters[i];
+      if (clusters[i].candidates.length < MIN_CLUSTER_SIZE) continue;
+      if (checkDisplay && mostlyHidden(clusters[i].candidates)) continue;
+      return clusters[i];
     }
     return null;
+  }
+
+  function mostlyHidden(candidates) {
+    var hidden = 0;
+    for (var i = 0; i < candidates.length; i += 1) if (notDisplayed(candidates[i].element)) hidden += 1;
+    return hidden * 2 > candidates.length;
   }
 
   function summarizeClusters(clusters) {
@@ -1861,7 +1886,8 @@
         discoveryOrder: i,
         rawText: normalizeText(card.textContent).slice(0, 400),
         metrics: metrics,
-        metricRaw: metricRaw
+        metricRaw: metricRaw,
+        _dbg: identity.dbg
       });
     }
     return items;
@@ -1902,7 +1928,235 @@
     return null;
   }
 
+  /* ---- 卡片身份:链接 / 预览图 / 预览文字 ---- */
+  // 真标题:标题标签、itemprop 标题、class 含 title。class 含 name 不算(常是作者名)
+  var STRONG_TITLE_SELECTOR = "h1,h2,h3,h4,[itemprop='headline' i],[itemprop='name' i],[class*='title' i]";
+  var WEAK_TITLE_SELECTOR = "h5,[class*='name' i]";
+  var OWNER_PROP_RE = /author|creator|publisher|brand|seller|contributor|provider/i;
+  var NUMERIC_TEXT_RE = /^[\d\s.,:%+\-·•|/()万千亿萬億kKmMbBwW$€£¥₩₹]*$/;
+
+  // 卡片身份(链接/预览图/预览文字)的规则开关:实测(2026-11-03,15 个样本页)后选定的组合
+  var IDENTITY_RULES = { link: true, thumb: true, mediaLink: true, preview: "v2" };
+  function identityRules() {
+    return IDENTITY_RULES;
+  }
+
+  function usableHref(anchor) {
+    var href = anchor.getAttribute("href") || "";
+    return !!href && href.charAt(0) !== "#" && !/^javascript:/i.test(href);
+  }
+
+  // itemprop=name 在 author/brand 这类范围里时,是人名/商家名,不是这张卡片的标题
+  function isStrongTitle(element, card) {
+    if (!normalizeText(element.textContent)) return false;
+    var prop = element.getAttribute("itemprop") || "";
+    if (/^name$/i.test(prop)) {
+      for (var node = element.parentElement; node && node !== card; node = node.parentElement) {
+        if (OWNER_PROP_RE.test((node.getAttribute && node.getAttribute("itemprop")) || "")) return false;
+      }
+    }
+    return true;
+  }
+
+  // 顺序:h1-h4 → itemprop → class 含 title;有布局时跳过没显示出来的(0 尺寸,如隐藏的弹层文字)
+  var TITLE_TIERS = ["h1,h2,h3,h4", "[itemprop='headline' i],[itemprop='name' i]", "[class*='title' i]"];
+  function strongTitles(card) {
+    var layout = !!renderedBox(card);
+    var out = [];
+    for (var t = 0; t < TITLE_TIERS.length; t += 1) {
+      var list = card.querySelectorAll(TITLE_TIERS[t]);
+      for (var i = 0; i < list.length; i += 1) {
+        if (out.indexOf(list[i]) >= 0 || !isStrongTitle(list[i], card)) continue;
+        if (layout && !renderedBox(list[i])) continue;
+        out.push(list[i]);
+      }
+    }
+    return out;
+  }
+
+  function isTimeAnchor(anchor) {
+    return !!(anchor.querySelector("time,[datetime]") || (anchor.matches && anchor.matches("[datetime]")) || (anchor.closest && anchor.closest("time")));
+  }
+
+  // 卡片自己的链接:整卡链接 → 真标题里的链接 → 包着时间的链接 → 旧的打分
+  function pickCardAnchor(card, headings, mediaNode) {
+    var own = ownCardLink(card);
+    if (own) return { anchor: own, rule: "own" };
+    var anchors = card.querySelectorAll("a[href]");
+    var usable = [];
+    for (var i = 0; i < anchors.length; i += 1) if (usableHref(anchors[i])) usable.push(anchors[i]);
+    for (var h = 0; h < headings.length; h += 1) {
+      for (var j = 0; j < usable.length; j += 1) {
+        if (usable[j].contains(headings[h]) || headings[h].contains(usable[j])) return { anchor: usable[j], rule: "heading" };
+      }
+    }
+    for (var k = 0; k < usable.length; k += 1) {
+      if (isTimeAnchor(usable[k])) return { anchor: usable[k], rule: "time" };
+    }
+    // [A+] 包着卡片主图(显示面积最大的图)的链接
+    if (identityRules().mediaLink && mediaNode) {
+      for (var g = 0; g < usable.length; g += 1) {
+        if (usable[g].contains(mediaNode)) return { anchor: usable[g], rule: "media" };
+      }
+      // 透明覆盖层:链接没有包住主图,但盖在主图上面(点图其实点的是这个链接)
+      for (var o = 0; o < usable.length; o += 1) {
+        if (coversNode(usable[o], mediaNode)) return { anchor: usable[o], rule: "media-overlay" };
+      }
+    }
+    var best = null;
+    var bestScore = -1;
+    for (var m = 0; m < usable.length; m += 1) {
+      var text = normalizeText(usable[m].textContent || usable[m].getAttribute("title") || "");
+      var score = 0;
+      var media = usable[m].querySelector("img,picture,video");
+      // [A+] 只有小图(头像、图标)的链接不再拿"含图"分
+      if (media && !(identityRules().mediaLink && renderedSmall(media))) score += 2;
+      if (text.length >= 6 && text.length <= 240) score += 3;
+      if (score > bestScore) { bestScore = score; best = usable[m]; }
+    }
+    return best ? { anchor: best, rule: "score" } : { anchor: null, rule: "none" };
+  }
+
+  // a 的显示区域盖住 target 的大部分(≥ 80%)
+  function coversNode(a, target) {
+    var ra = renderedBox(a);
+    var rt = renderedBox(target);
+    if (!ra || !rt) return false;
+    var w = Math.min(ra.right, rt.right) - Math.max(ra.left, rt.left);
+    var h = Math.min(ra.bottom, rt.bottom) - Math.max(ra.top, rt.top);
+    if (w <= 0 || h <= 0) return false;
+    return (w * h) >= 0.8 * rt.width * rt.height;
+  }
+
   function extractIdentity(card, pageUrl) {
+    var cfg = identityRules();
+    if (!cfg.link) return extractIdentityOld(card, pageUrl);
+    var title = "";
+    var url = "";
+    var headings = strongTitles(card);
+    var thumbnail = pickThumbnail(card, pageUrl);
+    var picked = pickCardAnchor(card, headings, lastThumbRule === "largest" ? lastThumbNode : null);
+    if (picked.anchor) url = absoluteUrl(picked.anchor.getAttribute("href"), pageUrl);
+    if (headings.length) { title = normalizeText(headings[0].textContent); }
+    if (!title && cfg.preview && cfg.preview !== "none") {
+      var block = mainTextBlock(card, url, pageUrl, cfg.preview);
+      if (block) { title = block; }
+    }
+    if (!title) {
+      var weak = card.querySelector(WEAK_TITLE_SELECTOR);
+      if (weak) { title = normalizeText(weak.textContent); }
+    }
+    // 时间链接的文字("9小时")不是标题
+    if (!title && picked.anchor && picked.rule !== "time") {
+      title = normalizeText(picked.anchor.textContent || picked.anchor.getAttribute("title") || "");
+    }
+    if (!title) {
+      var img = card.querySelector("img[alt]");
+      if (img) title = normalizeText(img.getAttribute("alt"));
+    }
+    if (!title) { title = normalizeText(card.textContent).slice(0, 80); }
+    var result = { title: title, url: url, thumbnail: thumbnail };
+    return result;
+  }
+
+  // 嵌套的被引用内容:卡片里第 2 个以后的 <time> 所在的最近 blockquote/article/[role=link] 子树
+  function quotedSubtrees(card) {
+    var times = card.querySelectorAll("time");
+    var out = [];
+    for (var i = 1; i < times.length; i += 1) {
+      for (var node = times[i].parentElement; node && node !== card; node = node.parentElement) {
+        var tag = (node.tagName || "").toLowerCase();
+        var role = (node.getAttribute && node.getAttribute("role")) || "";
+        if (tag === "blockquote" || tag === "article" || role === "link" || role === "article") {
+          if (!node.contains(times[0])) out.push(node);
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  // 预览文字:按渲染出来的面积挑卡片里的主要文字块(不按字数,中英文可比)。
+  // 排除:<time>、按钮、隐藏文字、全是指向别处的链接文字(作者名、@账号)、纯数字、被引用的嵌套内容。
+  // v1 = 面积最大;v2 = 字号×粗细最醒目的块(相同再比面积),用来模拟"不在 h1-h4 里的真标题"。
+  function mainTextBlock(card, ownUrl, pageUrl, variant) {
+    var doc = card.ownerDocument;
+    var view = doc && doc.defaultView;
+    if (!view || !view.getComputedStyle || !doc.createRange || !doc.createTreeWalker) return "";
+    var quoted = quotedSubtrees(card);
+    var hiddenCache = new Map();
+    var walker = doc.createTreeWalker(card, 4);
+    var range = doc.createRange();
+    var blocks = [];
+    var byEl = new Map();
+    var t;
+    while ((t = walker.nextNode())) {
+      var raw = t.nodeValue || "";
+      if (!raw.trim()) continue;
+      var el = t.parentElement;
+      if (!el || el.closest("time,button,[role='button'],script,style,noscript,svg,[aria-hidden='true'],select,option")) continue;
+      var inQuote = false;
+      for (var q = 0; q < quoted.length; q += 1) if (quoted[q].contains(el)) { inQuote = true; break; }
+      if (inQuote) continue;
+      var style = view.getComputedStyle(el);
+      if (style.visibility === "hidden" || Number(style.opacity) === 0) continue;
+      if (visuallyHidden(el, card, view, hiddenCache)) continue;
+      range.selectNodeContents(t);
+      var rects = range.getClientRects();
+      var area = 0;
+      var tops = [];
+      for (var r = 0; r < rects.length; r += 1) {
+        if (rects[r].width <= 0 || rects[r].height <= 0) continue;
+        area += rects[r].width * rects[r].height;
+        tops.push(Math.round(rects[r].top));
+      }
+      if (!area) continue;
+      var link = el.closest("a[href]");
+      var foreign = !!(link && card.contains(link) && absoluteUrl(link.getAttribute("href"), pageUrl) !== ownUrl);
+      var blk = el;
+      while (blk !== card && blk.parentElement && /^(inline|contents)/.test(view.getComputedStyle(blk).display)) blk = blk.parentElement;
+      var entry = byEl.get(blk);
+      if (!entry) { entry = { el: blk, text: "", area: 0, foreignArea: 0, tops: {}, font: 0, weight: 0 }; byEl.set(blk, entry); blocks.push(entry); }
+      entry.text += raw;
+      entry.area += area;
+      if (foreign) entry.foreignArea += area;
+      for (var k = 0; k < tops.length; k += 1) entry.tops[tops[k]] = 1;
+      entry.font = Math.max(entry.font, parseFloat(style.fontSize) || 0);
+      entry.weight = Math.max(entry.weight, parseFloat(style.fontWeight) || 400);
+    }
+    var best = null;
+    for (var b = 0; b < blocks.length; b += 1) {
+      var e = blocks[b];
+      e.text = normalizeText(e.text);
+      if (e.text.length < 2 || NUMERIC_TEXT_RE.test(e.text)) continue;
+      if (e.foreignArea >= e.area * 0.999) continue;
+      e.lines = Object.keys(e.tops).length;
+      if (!best) { best = e; continue; }
+      if (variant === "v2") {
+        var pe = e.font * (e.weight >= 600 ? 1.25 : 1);
+        var pb = best.font * (best.weight >= 600 ? 1.25 : 1);
+        if (pe > pb + 0.01 || (Math.abs(pe - pb) <= 0.01 && e.area > best.area)) best = e;
+      } else if (e.area > best.area) best = e;
+    }
+    return best ? best.text.slice(0, 200) : "";
+  }
+
+  // 只给读屏器的隐藏文字(sr-only):1px 盒子 + overflow hidden,或 clip/clip-path 裁掉
+  function visuallyHidden(el, card, view, cache) {
+    for (var node = el; node && node !== card; node = node.parentElement) {
+      if (cache.has(node)) { if (cache.get(node)) return true; continue; }
+      var cs = view.getComputedStyle(node);
+      var box = node.getBoundingClientRect();
+      var hidden = (cs.clip && cs.clip !== "auto" && /rect\(\s*0/.test(cs.clip)) ||
+        /inset\(\s*50%/.test(cs.clipPath || "") ||
+        ((box.width <= 1 || box.height <= 1) && cs.overflow === "hidden");
+      cache.set(node, !!hidden);
+      if (hidden) return true;
+    }
+    return false;
+  }
+
+  function extractIdentityOld(card, pageUrl) {
     var title = "";
     var url = "";
     var thumbnail = "";
@@ -1944,15 +2198,61 @@
   var PLACEHOLDER_FILE_RE = /placeholder|lazy|loading|blank|spacer|transparent|pixel|default[-_]?(img|image|thumb|cover)/i;
   var DECORATIVE_IMAGE_RE = /avatar|gravatar|icon|logo|emoji|badge/i;
   var DECORATIVE_MAX_SIZE = 48;
+  var lastThumbRule = "";
+  var lastThumbNode = null;
 
-  // 宁可没有预览图(结果页显示首字色块),也不要占位图、头像、小图标这类假封面
+  function renderedBox(node) {
+    if (!node.getBoundingClientRect) return null;
+    var rect = node.getBoundingClientRect();
+    return rect && rect.width > 0 && rect.height > 0 ? rect : null;
+  }
+
+  // 显示尺寸只有在图片真的加载出来后才可信;没加载的图(懒加载/坏图)显示尺寸不算证据
+  function renderedSmall(node) {
+    var rect = renderedBox(node);
+    if (!rect) return false;
+    if ((node.tagName || "").toLowerCase() === "img" && !(node.complete && node.naturalWidth > 0)) return false;
+    return rect.width <= DECORATIVE_MAX_SIZE || rect.height <= DECORATIVE_MAX_SIZE;
+  }
+
+  // 有布局时:显示面积最大的图(视频的封面帧 poster 也算);
+  // 没有布局(后台读取的页面)或没有够大的图时:旧规则(文档顺序第一张),但跳过显示出来很小的图
   function pickThumbnail(card, pageUrl) {
+    var cfg = identityRules();
+    if (cfg.thumb) {
+      var nodes = card.querySelectorAll("img,video");
+      var best = "";
+      var bestArea = 0;
+      lastThumbNode = null;
+      for (var n = 0; n < nodes.length; n += 1) {
+        var rect = renderedBox(nodes[n]);
+        if (!rect || renderedSmall(nodes[n])) continue;
+        var isVideo = (nodes[n].tagName || "").toLowerCase() === "video";
+        if (!isVideo && isDecorativeImage(nodes[n])) continue;
+        var found = "";
+        if (isVideo) {
+          found = absoluteUrl(nodes[n].getAttribute("poster"), pageUrl);
+          if (found && isPlaceholderUrl(found)) found = "";
+        } else {
+          found = imageUrl(nodes[n], pageUrl);
+          var pic = nodes[n].parentElement;
+          if (!found && pic && (pic.tagName || "").toLowerCase() === "picture") {
+            var sources = pic.querySelectorAll("source");
+            for (var s = 0; s < sources.length && !found; s += 1) found = imageUrl(sources[s], pageUrl);
+          }
+        }
+        if (found && rect.width * rect.height > bestArea) { bestArea = rect.width * rect.height; best = found; lastThumbNode = nodes[n]; }
+      }
+      if (best) { lastThumbRule = "largest"; return best; }
+    }
     var images = card.querySelectorAll("img,source");
     for (var i = 0; i < images.length; i += 1) {
       if (isDecorativeImage(images[i])) continue;
-      var found = imageUrl(images[i], pageUrl);
-      if (found) return found;
+      if (cfg.thumb && renderedSmall(images[i])) continue;
+      var url = imageUrl(images[i], pageUrl);
+      if (url) { lastThumbRule = "dom-order"; return url; }
     }
+    lastThumbRule = "none";
     return "";
   }
 
@@ -2036,7 +2336,7 @@
   // 套用模式:按保存的规则提取;返回覆盖率报告用于失效检测
   function applyRule(doc, rule, options) {
     var opts = options || {};
-    var found = findCards(doc);
+    var found = findCards(doc, opts.limits);
     var roots = found.roots;
     if (rule && rule.cardSignature && found.signature && found.signature !== rule.cardSignature) {
       // 主簇签名与规则不符 → 规则可能失效,仍尝试提取但降置信
