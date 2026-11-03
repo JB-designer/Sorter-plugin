@@ -1896,7 +1896,7 @@
     "--warning:#875414;--warningSoft:#F7EFDF;--danger:#9E3A3A;--dangerSoft:#F7E9E7;--focus:#4A5BA6;--link:#3B5C8F;--field:#FFFFFF;--onAccent:#FFFFFF;color-scheme:light}",
     // Dark palette: every colour comes from these tokens, so text and controls stay readable when the browser or a dark-mode extension darkens the page.
     "@media (prefers-color-scheme:dark){.panel,.bubble,.modal{--surface:#1E2427;--subtle:#262E31;--border:#3A4448;--text:#E6ECEE;--text2:#B4C0C3;--text3:#93A1A4;",
-    "--accent:#8FBCCD;--accentSoft:#24363E;--button:#4C7E92;--buttonHover:#5B8EA2;--success:#8FC7A0;--successSoft:#1D2C22;",
+    "--accent:#8FBCCD;--accentSoft:#24363E;--button:#47788C;--buttonHover:#3E6A7C;--success:#8FC7A0;--successSoft:#1D2C22;",
     "--warning:#E3C07A;--warningSoft:#33291A;--danger:#E59A92;--dangerSoft:#3A2422;--focus:#9AA8E6;--link:#9DBBE6;--field:#262E31;--onAccent:#FFFFFF;color-scheme:dark}}",
     "*{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Noto Sans SC','Microsoft YaHei',sans-serif}",
     ".panel{position:fixed;top:16px;right:16px;width:360px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto;z-index:2147483646;",
@@ -1965,7 +1965,7 @@
     ".mv button[disabled]{opacity:.35;cursor:default}",
     ".seg{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}",
     ".seg button{all:unset;flex:1;text-align:center;padding:5px 6px;font-size:12px;color:var(--text2);background:var(--field);cursor:pointer}",
-    ".seg button.on{background:var(--accent);color:var(--onAccent);font-weight:600}",
+    ".seg button.on{background:var(--button);color:var(--onAccent);font-weight:600}",
     ".seg button+button{border-left:1px solid var(--border)}",
     ".menu{border:1px solid var(--border);border-radius:10px;background:var(--field);box-shadow:0 4px 14px rgba(31,42,46,.12);overflow:hidden;margin:4px 0 8px}",
     ".mh{padding:7px 10px 4px;font-size:11px;font-weight:700;color:var(--text3);letter-spacing:.3px}",

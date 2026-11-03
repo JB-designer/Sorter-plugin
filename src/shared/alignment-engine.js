@@ -414,6 +414,19 @@
 
   // limits: 可选 { maxCards, maxSeeds }。按卡片数滚动读取时页面会越来越长,调用方可以放宽上限;
   // 不传时和以前完全一样
+  // 页面有真实布局时(在浏览器里打开的页面),一组大部分都没显示出来的元素(外层 display:none,
+  // 如收起的筛选栏、弹层里的色块列表)不能当作卡片组:用户看不见,也不会想给它们排序。
+  // 只按"整组"判断,不删组里个别隐藏的卡片(排序不减少卡片)。
+  // 后台读取的页面没有布局,所有元素都"没显示",这时不做这项检查。
+  function pageHasLayout(doc) {
+    var body = doc && doc.body;
+    return !!(body && body.getClientRects && body.getClientRects().length > 0);
+  }
+
+  function notDisplayed(element) {
+    return !!(element.getClientRects && element.getClientRects().length === 0);
+  }
+
   function findCards(doc, limits) {
     var maxCards = (limits && limits.maxCards) || MAX_CARDS;
     var seeds = collectSeeds(doc, (limits && limits.maxSeeds) || MAX_SEEDS);
@@ -433,7 +446,7 @@
     }
 
     var clusters = clusterBySignature(selected);
-    var main = pickMainCluster(clusters);
+    var main = pickMainCluster(clusters, pageHasLayout(doc));
     if (!main) return { roots: [], signature: "", clusterSizes: summarizeClusters(clusters) };
 
     var roots = main.candidates.map(function (c) { return c.element; });
@@ -585,11 +598,19 @@
     return clusters;
   }
 
-  function pickMainCluster(clusters) {
+  function pickMainCluster(clusters, checkDisplay) {
     for (var i = 0; i < clusters.length; i += 1) {
-      if (clusters[i].candidates.length >= MIN_CLUSTER_SIZE) return clusters[i];
+      if (clusters[i].candidates.length < MIN_CLUSTER_SIZE) continue;
+      if (checkDisplay && mostlyHidden(clusters[i].candidates)) continue;
+      return clusters[i];
     }
     return null;
+  }
+
+  function mostlyHidden(candidates) {
+    var hidden = 0;
+    for (var i = 0; i < candidates.length; i += 1) if (notDisplayed(candidates[i].element)) hidden += 1;
+    return hidden * 2 > candidates.length;
   }
 
   function summarizeClusters(clusters) {
@@ -1977,6 +1998,10 @@
       for (var g = 0; g < usable.length; g += 1) {
         if (usable[g].contains(mediaNode)) return { anchor: usable[g], rule: "media" };
       }
+      // 透明覆盖层:链接没有包住主图,但盖在主图上面(点图其实点的是这个链接)
+      for (var o = 0; o < usable.length; o += 1) {
+        if (coversNode(usable[o], mediaNode)) return { anchor: usable[o], rule: "media-overlay" };
+      }
     }
     var best = null;
     var bestScore = -1;
@@ -1990,6 +2015,17 @@
       if (score > bestScore) { bestScore = score; best = usable[m]; }
     }
     return best ? { anchor: best, rule: "score" } : { anchor: null, rule: "none" };
+  }
+
+  // a 的显示区域盖住 target 的大部分(≥ 80%)
+  function coversNode(a, target) {
+    var ra = renderedBox(a);
+    var rt = renderedBox(target);
+    if (!ra || !rt) return false;
+    var w = Math.min(ra.right, rt.right) - Math.max(ra.left, rt.left);
+    var h = Math.min(ra.bottom, rt.bottom) - Math.max(ra.top, rt.top);
+    if (w <= 0 || h <= 0) return false;
+    return (w * h) >= 0.8 * rt.width * rt.height;
   }
 
   function extractIdentity(card, pageUrl) {
