@@ -50,7 +50,8 @@
     flashRuleIndex: -1,      // 下拉框互换规则后,需要短暂高亮的那一行
     menuIndex: -1,           // 打开着数字菜单的规则序号
     lastResultId: null,      // 最近一次排序的结果缓存 id;有值且无任何改动时,前 5 名下面显示「打开完整结果」
-    setupFolded: false       // 排好后设置区收成一行摘要,点「修改」展开
+    setupFolded: false,      // 排好后设置区收成一行摘要,点「修改」展开
+    anchor: null             // 面板/胶囊的位置(src/core/panel-position.js),拖动松手时保存
   };
 
   var SORT_PRIORITY = ["downloads", "favorites", "likes", "views", "heat", "comments", "endorsements", "score", "dislikes", "fileSize", "price"];
@@ -61,11 +62,14 @@
   async function toggle() {
     if (host) {
       host.style.display = host.style.display === "none" ? "" : "none";
+      if (host.style.display === "") applyPosition();
       return;
     }
     await loadCore();
-    buildPanel();
     state.ruleKey = core.rules.makeRuleKey(location.href);
+    // 同一个网址(只是页码不同)记住拖到的位置;新页面从默认的右上角开始
+    state.anchor = (await core.position.loadAnchor(state.ruleKey)) || core.position.defaultAnchor();
+    buildPanel();
     state.rule = normalizeRule(await core.rules.getRuleForUrl(location.href));
     detectCurrentPage();
   }
@@ -83,7 +87,8 @@
       resultView: await import(url("src/core/result-view.js")),
       crawler: await import(url("src/core/crawler.js")),
       generic: await import(url("src/core/generic-adapter.js")),
-      i18n: await import(url("src/core/i18n.js"))
+      i18n: await import(url("src/core/i18n.js")),
+      position: await import(url("src/core/panel-position.js"))
     };
   }
 
@@ -1447,10 +1452,15 @@
     "*{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Noto Sans SC','Microsoft YaHei',sans-serif}",
     ".panel{position:fixed;top:16px;right:16px;width:360px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto;z-index:2147483646;",
     "background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:12px;box-shadow:0 6px 24px rgba(31,42,46,.14);font-size:13px;line-height:1.45;text-align:left}",
-    ".bubble{position:fixed;top:16px;right:16px;z-index:2147483646;background:var(--button);color:var(--onAccent);border:none;border-radius:20px;padding:8px 16px;font-size:13px;cursor:pointer;box-shadow:0 4px 14px rgba(31,42,46,.25)}",
+    ".bubble{position:fixed;top:16px;right:16px;z-index:2147483646;background:var(--button);color:var(--onAccent);border:none;border-radius:20px;padding:8px 16px;font-size:13px;cursor:grab;box-shadow:0 4px 14px rgba(31,42,46,.25);white-space:nowrap;user-select:none;touch-action:none}",
+    ".bubble:hover{background:var(--buttonHover)}",
+    // 拖动:按住胶囊或标题栏移动;拖动中加深阴影
+    ".bubble.dragging{cursor:grabbing;box-shadow:0 10px 28px rgba(31,42,46,.38)}",
+    ".panel.dragging{box-shadow:0 14px 40px rgba(31,42,46,.30)}",
+    ".panel.dragging .ph{cursor:grabbing}",
     "button{font:inherit;color:inherit}",
     ":focus-visible{outline:2px solid var(--focus);outline-offset:1px}",
-    ".ph{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:3}",
+    ".ph{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:3;cursor:grab;user-select:none;touch-action:none}",
     ".ph .logo{width:18px;height:18px;border-radius:5px;background:var(--accent);flex:none}",
     ".ph .t{font-weight:600;flex:1}",
     ".ph .x{all:unset;cursor:pointer;color:var(--text3);font-size:14px;padding:0 4px;line-height:20px}",
@@ -1552,7 +1562,7 @@
     ".pickbar .btn2{color:var(--accent);border-color:var(--field)}",
     ".dim{display:none;position:absolute;left:0;top:0;right:0;min-height:100%;background:rgba(20,24,26,.55);z-index:5}",
     ".panel.picking .dim{display:block}",
-    ".panel.picking .ph{position:static}",
+    ".panel.picking .ph{position:relative;z-index:7}",
     ".del{all:unset;width:20px;height:20px;line-height:18px;text-align:center;border-radius:50%;color:var(--text3);font-size:15px;cursor:pointer;position:relative;flex:none}",
     ".del:hover{color:var(--danger);background:var(--dangerSoft)}",
     ".del[data-tip]:hover::after{content:attr(data-tip);position:absolute;right:0;top:24px;white-space:nowrap;background:var(--text);color:var(--surface);font-size:11px;font-weight:400;line-height:1.4;padding:3px 7px;border-radius:5px;z-index:4;pointer-events:none}",
@@ -1602,11 +1612,13 @@
 
     var bubble = document.createElement("button");
     bubble.className = "bubble";
-    bubble.textContent = "▲ " + t("name");
+    bubble.textContent = "▲ " + t("shortName");
+    bubble.setAttribute("aria-label", t("name"));
     bubble.style.display = "none";
     bubble.addEventListener("click", function () {
       panel.style.display = "";
       bubble.style.display = "none";
+      applyPosition();
     });
     shadow.appendChild(bubble);
 
@@ -1619,6 +1631,17 @@
     panel.querySelectorAll("[data-el]").forEach(function (el) { ui[el.getAttribute("data-el")] = el; });
     ui.panel = panel;
     ui.bubble = bubble;
+
+    makeDraggable(bubble, bubble);
+    makeDraggable(panel.querySelector(".ph"), panel);
+    // 拖完松手后浏览器还会补一个 click:吞掉它,免得胶囊被展开或网页上的数字被选中
+    shadow.addEventListener("click", function (event) {
+      if (!dragJustEnded) return;
+      event.stopPropagation();
+      event.preventDefault();
+    }, true);
+    window.addEventListener("resize", applyPosition);
+    applyPosition();
 
     panel.addEventListener("click", function (event) {
       var target = event.target.closest("[data-act]");
@@ -1647,8 +1670,79 @@
     });
   }
 
+  /* ================= 拖动与位置 ================= */
+
+  var dragJustEnded = false;
+
+  // 当前显示的那一个(面板或胶囊)按存的位置摆好,并夹回窗口内。只摆,不保存。
+  function applyPosition() {
+    if (!ui.panel) return;
+    var el = ui.panel.style.display === "none" ? ui.bubble : ui.panel;
+    var rect = el.getBoundingClientRect();
+    var css = core.position.styleFromAnchor(state.anchor, rect.width, rect.height, window.innerWidth, window.innerHeight);
+    el.style.left = css.left;
+    el.style.right = css.right;
+    el.style.top = css.top;
+    el.style.bottom = css.bottom;
+    if (el === ui.panel) el.style.maxHeight = css.maxHeight;
+  }
+
+  // handle = 按住的地方;target = 跟着动的元素。按下后移动超过几像素才算拖,否则还是普通点击。
+  function makeDraggable(handle, target) {
+    var drag = null;
+    handle.addEventListener("pointerdown", function (event) {
+      if (event.button !== 0 || !event.isPrimary) return;
+      // 标题栏里的按钮(收起「—」)照常点击,不从那里开始拖
+      if (handle !== ui.bubble && event.target.closest && event.target.closest("button")) return;
+      var rect = target.getBoundingClientRect();
+      drag = {
+        id: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+        threshold: event.pointerType === "mouse" ? 4 : 8,
+        moving: false
+      };
+      try { handle.setPointerCapture(event.pointerId); } catch (error) { /* 抓不到也能拖,只是快速甩出时可能跟丢 */ }
+    });
+    handle.addEventListener("pointermove", function (event) {
+      if (!drag || event.pointerId !== drag.id) return;
+      var dx = event.clientX - drag.startX;
+      var dy = event.clientY - drag.startY;
+      if (!drag.moving) {
+        if (Math.abs(dx) < drag.threshold && Math.abs(dy) < drag.threshold) return;
+        drag.moving = true;
+        target.classList.add("dragging");
+      }
+      var pos = core.position.clampTopLeft(drag.left + dx, drag.top + dy, drag.width, drag.height, window.innerWidth, window.innerHeight);
+      target.style.left = pos.left + "px";
+      target.style.top = pos.top + "px";
+      target.style.right = "auto";
+      target.style.bottom = "auto";
+      event.preventDefault();
+    });
+    function finish(event, save) {
+      if (!drag || event.pointerId !== drag.id) return;
+      var moved = drag.moving;
+      drag = null;
+      try { handle.releasePointerCapture(event.pointerId); } catch (error) { /* 已经释放 */ }
+      if (!moved) return;
+      target.classList.remove("dragging");
+      state.anchor = core.position.anchorFromRect(target.getBoundingClientRect(), window.innerWidth, window.innerHeight);
+      applyPosition();
+      if (save) core.position.saveAnchor(state.ruleKey, state.anchor);
+      dragJustEnded = true;
+      setTimeout(function () { dragJustEnded = false; }, 0);
+    }
+    handle.addEventListener("pointerup", function (event) { finish(event, true); });
+    handle.addEventListener("pointercancel", function (event) { finish(event, true); });
+  }
+
   function handleAction(act, target) {
-    if (act === "minimize") { ui.panel.style.display = "none"; ui.bubble.style.display = ""; }
+    if (act === "minimize") { ui.panel.style.display = "none"; ui.bubble.style.display = ""; applyPosition(); }
     else if (act === "redetect") { state.notes = []; detectCurrentPage(); }
     else if (act === "pickCancel") stopPicking();
     else if (act === "forget") forgetSite();

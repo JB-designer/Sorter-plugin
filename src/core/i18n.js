@@ -52,6 +52,7 @@ function plural(n, one, many) {
 
 const ZH = {
   name: "多级排序 — 多属性网页卡片排序",
+  shortName: "多级排序",
   minimize: "收起",
   preparing: "正在准备…",
   scanning: "正在识别卡片…",
@@ -237,6 +238,7 @@ const ZH = {
 
 const EN = {
   name: "Advanced Card Sort",
+  shortName: "Advanced Card Sort",
   minimize: "Minimize",
   preparing: "Getting ready…",
   scanning: "Scanning for cards…",
