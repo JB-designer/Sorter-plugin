@@ -412,8 +412,11 @@
   var BLOCKED_IDENTITY_RE = /\b(nav|navbar|menu|header|footer|sidebar|side-bar|widget|pagination|pager|breadcrumb|popup|modal|overlay|cookie|login|signup|register|search-form|filter|dropdown|language|advert|ads?|banner|notice|toast|tooltip|suggest)\b/i;
   var BLOCKED_ANCESTOR_SELECTOR = "nav,header,footer,aside,[role='navigation'],[role='banner'],[role='contentinfo']";
 
-  function findCards(doc) {
-    var seeds = collectSeeds(doc);
+  // limits: 可选 { maxCards, maxSeeds }。按卡片数滚动读取时页面会越来越长,调用方可以放宽上限;
+  // 不传时和以前完全一样
+  function findCards(doc, limits) {
+    var maxCards = (limits && limits.maxCards) || MAX_CARDS;
+    var seeds = collectSeeds(doc, (limits && limits.maxSeeds) || MAX_SEEDS);
     var scored = [];
     for (var i = 0; i < seeds.length; i += 1) {
       var candidate = scoreCandidate(seeds[i]);
@@ -425,7 +428,7 @@
     });
 
     var selected = [];
-    for (var s = 0; s < scored.length && selected.length < MAX_CARDS * 2; s += 1) {
+    for (var s = 0; s < scored.length && selected.length < maxCards * 2; s += 1) {
       insertNonOverlapping(selected, scored[s]);
     }
 
@@ -437,13 +440,14 @@
     roots = promoteSplitCards(roots, selected);
     roots.sort(compareDomOrder);
     return {
-      roots: roots.slice(0, MAX_CARDS),
+      roots: roots.slice(0, maxCards),
       signature: main.signature,
       clusterSizes: summarizeClusters(clusters)
     };
   }
 
-  function collectSeeds(doc) {
+  function collectSeeds(doc, maxSeeds) {
+    var seedCap = maxSeeds || MAX_SEEDS;
     var seeds = [];
     var seen = typeof Set === "undefined" ? null : new Set();
     function add(element) {
@@ -452,7 +456,7 @@
         if (seen.has(element)) return;
         seen.add(element);
       }
-      if (seeds.length < MAX_SEEDS) seeds.push(element);
+      if (seeds.length < seedCap) seeds.push(element);
     }
 
     var structural = doc.querySelectorAll("article,li,[class*='card' i],[class*='item' i],[class*='post' i],[class*='thumb' i],[class*='cell' i],[class*='tile' i],[class*='entry' i],[class*='mod-' i],[class*='video' i],[class*='result' i]");
@@ -470,7 +474,7 @@
     // 图片包得很深(按钮、轮播里套了七八层)时,从链接往上也爬几层:
     // 整张卡片常是"一个盖住全卡的空链接 + 旁边的图片和文字"
     var anchors = doc.querySelectorAll("a[href]");
-    for (var l = 0; l < anchors.length && seeds.length < MAX_SEEDS; l += 1) {
+    for (var l = 0; l < anchors.length && seeds.length < seedCap; l += 1) {
       var up = anchors[l].parentElement;
       for (var level = 0; up && level < 3; level += 1) {
         add(up);
@@ -2036,7 +2040,7 @@
   // 套用模式:按保存的规则提取;返回覆盖率报告用于失效检测
   function applyRule(doc, rule, options) {
     var opts = options || {};
-    var found = findCards(doc);
+    var found = findCards(doc, opts.limits);
     var roots = found.roots;
     if (rule && rule.cardSignature && found.signature && found.signature !== rule.cardSignature) {
       // 主簇签名与规则不符 → 规则可能失效,仍尝试提取但降置信
