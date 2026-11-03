@@ -2107,7 +2107,7 @@
     box.innerHTML = "";
     if (ui.dateLink) {
       ui.dateLink.textContent = t(state.dateMode ? "readByPage" : "readByDate");
-      ui.dateLink.hidden = Boolean(state.noPaging);
+      ui.dateLink.style.display = state.noPaging ? "none" : "";
     }
     if (state.noPaging) {
       box.className = "box";
