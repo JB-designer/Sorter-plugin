@@ -112,7 +112,14 @@
     var page = currentPageNumber();
     state.currentPage = page;
     state.totalPages = detectTotalPages(page);
+    // 页面上既没有页码链接、也没有"下一页"、也没写总页数(常见于一直往下滑的网站)→ 只能读当前页,
+    // 不再摆出读不到东西的翻页控件
+    state.noPaging = !state.totalPages && page === 1 && !numberedPageLinks().length && !nextPageLink();
     state.pageRange = core.pageRange.createPageRange({ current: page, total: state.totalPages });
+    if (state.noPaging) {
+      state.pageRange = core.pageRange.chooseThisPage(state.pageRange);
+      state.dateMode = false;
+    }
     state.editingStart = false;
     invalidateResultCache(); // 重新识别/换页 = 输入变了,旧结果缓存不再对应当前选择
     setScope(t("scanning"));
@@ -2098,7 +2105,19 @@
     var box = ui.rangeBox;
     if (!box || !state.pageRange) return;
     box.innerHTML = "";
-    if (ui.dateLink) ui.dateLink.textContent = t(state.dateMode ? "readByPage" : "readByDate");
+    if (ui.dateLink) {
+      ui.dateLink.textContent = t(state.dateMode ? "readByPage" : "readByDate");
+      ui.dateLink.hidden = Boolean(state.noPaging);
+    }
+    if (state.noPaging) {
+      box.className = "box";
+      var only = el("div", "note info");
+      only.setAttribute("role", "status");
+      only.appendChild(el("div", "h", t("noPagingTitle")));
+      only.appendChild(el("div", "b", t("noPagingBody")));
+      box.appendChild(only);
+      return;
+    }
     if (state.dateMode) {
       box.className = "box datebox";
       var dateLine = el("div", "line");

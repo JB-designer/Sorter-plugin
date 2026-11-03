@@ -434,6 +434,7 @@
     if (!main) return { roots: [], signature: "", clusterSizes: summarizeClusters(clusters) };
 
     var roots = main.candidates.map(function (c) { return c.element; });
+    roots = promoteSplitCards(roots, selected);
     roots.sort(compareDomOrder);
     return {
       roots: roots.slice(0, MAX_CARDS),
@@ -510,6 +511,17 @@
     return { element: element, score: score, textLength: text.length };
   }
 
+  function multiValueRatio(texts) {
+    if (!texts.length) return 0;
+    var many = 0;
+    var tokenRe = new RegExp(NUM_TOKEN_SRC, "g");
+    for (var i = 0; i < texts.length; i += 1) {
+      var found = stripDateAndDuration(normalizeText(texts[i])).match(tokenRe);
+      if (found && found.length >= 3) many += 1;
+    }
+    return many / texts.length;
+  }
+
   function countNumberish(text) {
     var stripped = stripDateAndDuration(text);
     var matches = stripped.match(new RegExp(NUM_TOKEN_SRC + "\\s*(?:万|萬|亿|億|k|m|b|kb|mb|gb)?", "gi"));
@@ -528,6 +540,32 @@
       }
     }
     selected.push(candidate);
+  }
+
+  // 有的网站把一张卡片拆成并排的两块:一块是图和标题,另一块是作者和数字。两块会各自被认成"卡片",
+  // 只挑中其中一块就会缺图或缺数字。每块的上一层正好只包着这一块、并且还包着另一块被认出来的半张
+  // → 改用上一层(整张卡片)。上一层本身也必须像一张卡片。
+  var SPLIT_CARD_SHARE = 0.6;
+
+  function promoteSplitCards(roots, selected) {
+    if (roots.length < MIN_CLUSTER_SIZE) return roots;
+    var parents = [];
+    var seen = typeof Set === "undefined" ? null : new Set();
+    var paired = 0;
+    for (var i = 0; i < roots.length; i += 1) {
+      var parent = roots[i].parentElement;
+      if (!parent || !scoreCandidate(parent)) return roots;
+      if (seen) {
+        if (seen.has(parent)) return roots; // 上一层包着好几张卡片 = 列表本身,不是整张卡片
+        seen.add(parent);
+      }
+      parents.push(parent);
+      for (var k = 0; k < selected.length; k += 1) {
+        var other = selected[k].element;
+        if (other !== roots[i] && parent.contains(other) && !roots[i].contains(other)) { paired += 1; break; }
+      }
+    }
+    return paired / roots.length >= SPLIT_CARD_SHARE ? parents : roots;
   }
 
   function clusterBySignature(candidates) {
@@ -1080,6 +1118,7 @@
     });
     candidates = mergeSplitFields(candidates, minor);
     dedupeAttrEcho(candidates);
+    borrowEchoNames(candidates);
     candidates.forEach(function (candidate) { delete candidate._values; delete candidate._texts; });
     candidates.sort(compareCandidates);
     return candidates;
@@ -1452,6 +1491,9 @@
     var kind = pairLabel ? "pair" : attr ? "attr" : "text";
 
     if (!isSortable && kind === "attr") return null; // 不可解析的属性没有展示价值
+    // 一段提示文字里写着三个以上的数("405 回复、2468 转帖、1234 喜欢")= 一整排按钮的总说明,不是一个字段;
+    // 留着它会和第一个数重合,把一串名字安到那个数头上
+    if (kind === "attr" && typing.type === "number" && multiValueRatio(texts) >= 0.6) return null;
     if (!isSortable && kind === "pair") return null;
 
     var id = makeCandidateId(labelInfo, typing.type, path, counter);
@@ -1653,8 +1695,20 @@
     return { siteLabel: "", display: "", canonical: null, source: "unnamed" };
   }
 
+  // 读屏提示文字常写成"次转帖。转帖"、"喜欢次数。喜欢":取第一句,去掉"次 / 次数"这类量词
+  function tidyLabel(text) {
+    var clean = normalizeText(text);
+    if (!/[一-龥]/.test(clean)) return clean;
+    var parts = clean.split(/[。！？]/).map(function (part) {
+      var trimmed = normalizeText(part);
+      var bare = trimmed.replace(/^次(?!数)/, "").replace(/次数$|次$/, "");
+      return bare || trimmed;
+    }).filter(Boolean);
+    return parts.length ? parts[0] : clean;
+  }
+
   function finishLabel(siteLabel, canonical, source) {
-    var clean = normalizeText(siteLabel).replace(/[:：]+$/, "");
+    var clean = tidyLabel(siteLabel).replace(/[:：]+$/, "");
     if (canonical && canonical.id === "price") clean = normalizeText(clean.replace(new RegExp(CURRENCY_RE.source, "gi"), " ")).replace(/[:：]+$/, "");
     var display;
     if (canonical && clean && !canonical.re.test(clean)) display = clean + " · " + canonical.zh + " " + canonical.en;
@@ -1711,6 +1765,44 @@
         delete candidates[k].shadowed;
       }
     }
+  }
+
+  // 卡片上写"15万",按钮的提示文字里写"155478 次查看":提示文字被藏起来了,但它的名字属于这个数。
+  // 无名的数字就在这个元素里面,并且两边的数在每张卡片上都差不到 10%(只是缩写)→ 借用这个名字。
+  var ECHO_NAME_TOLERANCE = 0.1;
+
+  function borrowEchoNames(candidates) {
+    candidates.forEach(function (target) {
+      if (target.kind !== "text" || target.type !== "number" || !target._values) return;
+      if (target.siteLabel || target.canonicalId) return;
+      for (var i = 0; i < candidates.length; i += 1) {
+        var echo = candidates[i];
+        if (echo.kind !== "attr" || !echo._values || !(echo.siteLabel || echo.canonicalId)) continue;
+        if (target.path.indexOf(echo.path + ">") !== 0) continue;
+        if (!closeValues(target._values, echo._values)) continue;
+        target.siteLabel = echo.siteLabel;
+        target.label = echo.label;
+        target.canonicalId = echo.canonicalId;
+        target.source = "attr-echo";
+        target.suspect = false;
+        if (target.coverage.count / target.coverage.total >= COVERAGE_TRUST) target.preChecked = true;
+        return;
+      }
+    });
+  }
+
+  function closeValues(a, b) {
+    var shared = 0;
+    for (var key in a) {
+      if (!(key in b)) continue;
+      var x = a[key];
+      var y = b[key];
+      if (typeof x !== "number" || typeof y !== "number") return false;
+      var scale = Math.max(Math.abs(x), Math.abs(y));
+      if (scale && Math.abs(x - y) / scale > ECHO_NAME_TOLERANCE) return false;
+      shared += 1;
+    }
+    return shared >= Math.min(3, Object.keys(a).length);
   }
 
   function compareCandidates(a, b) {
