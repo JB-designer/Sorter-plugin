@@ -1906,7 +1906,7 @@
     "*{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Noto Sans SC','Microsoft YaHei',sans-serif}",
     ".panel{position:fixed;top:16px;right:16px;width:360px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto;z-index:2147483646;",
     "background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:12px;box-shadow:0 6px 24px rgba(31,42,46,.14);font-size:13px;line-height:1.45;text-align:left}",
-    ".bubble{position:fixed;top:16px;right:16px;z-index:2147483646;background:var(--button);color:var(--onAccent);border:none;border-radius:20px;padding:8px 16px;font-size:13px;cursor:grab;box-shadow:0 4px 14px rgba(31,42,46,.25);white-space:nowrap;user-select:none;touch-action:none}",
+    ".bubble{position:fixed;top:16px;right:16px;z-index:2147483646;background:var(--button);color:var(--onAccent);border:none;border-radius:20px;padding:8px 16px;font-size:13px;cursor:grab;box-shadow:0 4px 14px rgba(31,42,46,.25);white-space:nowrap;display:flex;align-items:center;gap:6px;user-select:none;touch-action:none}",
     ".bubble:hover{background:var(--buttonHover)}",
     // 拖动:按住胶囊或标题栏移动;拖动中加深阴影
     ".bubble.dragging{cursor:grabbing;box-shadow:0 10px 28px rgba(31,42,46,.38)}",
@@ -1915,10 +1915,13 @@
     "button{font:inherit;color:inherit}",
     ":focus-visible{outline:2px solid var(--focus);outline-offset:1px}",
     ".ph{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:3;cursor:grab;user-select:none;touch-action:none}",
-    ".ph .logo{width:18px;height:18px;border-radius:5px;background:var(--accent);flex:none}",
+    ".ph .logo{width:20px;height:20px;border-radius:5px;background:var(--button);color:var(--onAccent);flex:none;display:flex;align-items:center;justify-content:center}",
+    ".ph .logo svg{width:14px;height:14px}",
     ".ph .t{font-weight:600;flex:1}",
-    ".ph .x{all:unset;cursor:pointer;color:var(--text3);font-size:14px;padding:0 4px;line-height:20px}",
-    ".ph .x:hover{color:var(--text)}",
+    ".ph .x{all:unset;cursor:pointer;color:var(--text3);width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex:none}",
+    ".ph .x svg{width:16px;height:16px}",
+    ".ph .x:hover{color:var(--text);background:var(--subtle)}",
+    ".bubble svg{width:16px;height:16px;flex:none}",
     ".scope{padding:7px 12px;background:var(--subtle);font-size:12px;color:var(--text2);border-bottom:1px solid var(--border)}",
     ".pb{padding:12px}",
     ".lbl{font-size:12px;font-weight:600;color:var(--text2);margin:0 0 6px}",
@@ -2044,6 +2047,11 @@
     ".mok:focus-visible{outline:2px solid var(--focus);outline-offset:2px}"
   ].join("\n");
 
+  // 图标(线条来自 Lucide,ISC 许可):标题栏和收起胶囊用同一个排序标志;「–」= 收起,点胶囊 = 恢复
+  var SVG_OPEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+  var ICON_SORT = SVG_OPEN + ' stroke-width="2.2"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="M11 4h10"/><path d="M11 8h7"/><path d="M11 12h4"/></svg>';
+  var ICON_MINUS = SVG_OPEN + ' stroke-width="2"><path d="M5 12h14"/></svg>';
+
   function buildPanel() {
     host = document.createElement("div");
     host.id = "card-sorter-host";
@@ -2060,8 +2068,8 @@
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-label", t("name"));
     panel.innerHTML =
-      '<div class="ph"><span class="logo"></span><span class="t">' + esc(t("name")) + '</span>' +
-      '  <button class="x" data-act="minimize" title="' + esc(t("minimize")) + '" aria-label="' + esc(t("minimize")) + '">—</button></div>' +
+      '<div class="ph"><span class="logo">' + ICON_SORT + '</span><span class="t">' + esc(t("name")) + '</span>' +
+      '  <button class="x" data-act="minimize" title="' + esc(t("minimize")) + '" aria-label="' + esc(t("minimize")) + '">' + ICON_MINUS + '</button></div>' +
       '<div class="scope" data-el="scope">' + esc(t("preparing")) + '</div>' +
       '<div class="pb">' +
       '  <div class="notes" data-el="notes" aria-live="polite"></div>' +
@@ -2087,7 +2095,7 @@
 
     var bubble = document.createElement("button");
     bubble.className = "bubble";
-    bubble.textContent = "▲ " + t("shortName");
+    bubble.innerHTML = ICON_SORT + '<span>' + esc(t("shortName")) + '</span>';
     bubble.setAttribute("aria-label", t("name"));
     bubble.style.display = "none";
     bubble.addEventListener("click", function () {
