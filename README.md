@@ -69,7 +69,7 @@ The website’s loading method, pagination, or access restrictions may prevent s
 
 **Does sorting remove cards?**
 
-Sorting changes the order of the collected cards. Duplicate entries are merged. If you use a date range, only cards within that range are collected.
+Sorting changes the order of the collected cards. Duplicate entries are merged.
 
 **Can I export the results?**
 
@@ -156,7 +156,7 @@ Source code is licensed under MIT. See [`LICENSE`](LICENSE) for details.
 
 **排序会减少卡片吗？**
 
-排序会调整已收集卡片的顺序，重复项会合并。如果使用日期范围，则只收集该范围内的卡片。
+排序会调整已收集卡片的顺序，重复项会合并。
 
 **可以导出结果吗？**
 

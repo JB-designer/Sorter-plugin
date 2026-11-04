@@ -21,23 +21,6 @@ function detectLang() {
 export const lang = detectLang();
 export const isZh = lang === "zh";
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-// "2025-01-01" → "2025/1/1" / "Jan 1, 2025"
-export function formatDay(iso) {
-  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(String(iso || ""));
-  if (!m) return String(iso || "");
-  const [, y, mo, d] = m;
-  return isZh ? `${y}/${Number(mo)}/${Number(d)}` : `${MONTHS[Number(mo) - 1]} ${Number(d)}, ${y}`;
-}
-
-// 日期范围;某一头没填时用"…"或"今天"
-export function formatDayRange(from, to) {
-  const a = from ? formatDay(from) : "…";
-  const b = to ? formatDay(to) : (isZh ? "今天" : "today");
-  return `${a}–${b}`;
-}
-
 // 页码列表:"3、7" / "3 and 7"(标题)或 "3, 7"(按钮)
 function pageList(pages, { and = false } = {}) {
   const list = (pages || []).map(String);
@@ -90,8 +73,6 @@ const ZH = {
   number: "数字",
   numberEg: (v) => `数字（如 ${v}）`,
   rescan: "重新识别",
-  readByDate: "按日期读取",
-  readByPage: "按页码读取",
   resetSite: "重置本站设置",
   edit: "修改",
   lowHighSuffix: "（低 → 高）",
@@ -145,10 +126,6 @@ const ZH = {
   beforeBody: (n) => `是要读取 ${n} 页吗？`,
   useRange: ({ from, to }) => (from === to ? `改为第 ${from} 页` : `改为第 ${from}–${to} 页`),
   startAtOne: "从第 1 页开始",
-  dateLead: "日期",
-  dateMid: "至",
-  dateHint: "仅读取包含这些日期的页面。",
-  sortDates: "排序此日期范围",
 
   readingTitle: "正在读取页面…",
   keepTabOpen: "请勿关闭此标签页。",
@@ -169,10 +146,6 @@ const ZH = {
   resetBody: "已重新识别本页。",
   noFieldTitle: "⚠ 暂无可排序项",
   noFieldBody: "打开条件菜单，选择“手动选取可排序项”，再点击卡片上的数字。",
-  dateRangeTitle: "⚠ 请输入日期范围",
-  dateRangeBody: "至少需要一个日期。",
-  noDateTitle: "⚠ 未找到日期",
-  noDateBody: "打开条件菜单，选择“手动选取可排序项”，再点击卡片上的日期。",
   noCardsReadTitle: "⚠ 未读取到卡片",
   noCardsReadBody: (endedAfter) => `所选页面均无卡片${endedAfter != null ? `（列表可能只有 ${endedAfter} 页）` : ""}。请检查读取范围，或重试。`,
   pageNoCardsAfterRetry: (page) => `第 ${page} 页重试后仍无卡片。已读页面均已保留，可减少页数或重新排序。`,
@@ -190,8 +163,6 @@ const ZH = {
   emptyTitle: "⚠ 没有可排序的卡片",
   emptyNoCards: "未读取到卡片。请点击“重新识别”。",
   emptyPages: (n) => `已读取 ${n} 张，但都不在所选页面中。请检查读取范围。`,
-  emptyDates: ({ n, range, span }) => `已读取 ${n} 张，均不在 ${range} 内。${span ? `已读卡片日期为 ${span}。` : ""}`,
-  emptyNoDates: (n) => `已读取 ${n} 张，但卡片上都没有日期。`,
   lowCount: ({ parts, max }) => `${parts.map((p) => `第 ${p.page} 页只有 ${p.count} 张卡片`).join("，")}（其他页约 ${max} 张）。若是最后一页则正常，否则可能有遗漏。`,
   openFailTitle: "⚠ 无法打开结果页",
   sortFailTitle: "⚠ 排序失败",
@@ -199,19 +170,6 @@ const ZH = {
   tryAgain: "请重试。",
   gotIt: "知道了",
 
-  dateProbing: (n) => `正在查找日期所在页…（已检查 ${n} 页）`,
-  dateLocating: "正在查找日期所在页…",
-  dateFound: ({ from, to, span }) => `日期位于第 ${from}–${to} 页（共 ${span} 页），正在读取…`,
-  dateAdjust: (page) => `正在校正位置，检查第 ${page} 页…`,
-  dateLinear: (max) => `无法定位日期，改为从第 1 页起逐页读取（最多 ${max} 页）…`,
-  dateNone: ({ total, range }) => `${total} 页中没有 ${range} 的日期。请检查日期。`,
-  dateTooMany: ({ from, to, span, max }) => `这些日期跨第 ${from}–${to} 页（共 ${span} 页），单次最多 ${max} 页。请缩小日期范围。`,
-  datePageNoDates: (page) => `第 ${page} 页没有日期，查找已停止。请扩大日期范围，或按页码读取。`,
-  dateNotFound: ({ page, span }) => `仍未找到这些日期所在的页${page ? `（最后检查第 ${page} 页，日期约为 ${span}）` : ""}。请扩大日期范围，或按页码读取。`,
-  dateCap: ({ max, date }) => `已达 ${max} 页上限，仍未读到 ${date}。请选择更晚的起始日期。`,
-  dateStoppedAt: (page) => `已停在第 ${page} 页（无卡片或日期）。已读页面均已保留。`,
-  dateFailTitle: "⚠ 按日期读取未完成",
-  dateFailBody: "已读内容均已排序，请重试。",
 
   pickNumber: "点击卡片上要排序的数字",
   pickNewRule: (n) => `点击数字，添加为条件 ${n}`,
@@ -314,8 +272,6 @@ const EN = {
   number: "Number",
   numberEg: (v) => `Number (e.g. ${v})`,
   rescan: "Rescan",
-  readByDate: "Read by date",
-  readByPage: "Read by page",
   resetSite: "Reset site setup",
   edit: "Edit",
   lowHighSuffix: " (low → high)",
@@ -369,10 +325,6 @@ const EN = {
   beforeBody: (n) => `Did you mean ${n} ${plural(n, "page", "pages")}?`,
   useRange: ({ from, to }) => (from === to ? `Use page ${from}` : `Use pages ${from}–${to}`),
   startAtOne: "Start at page 1",
-  dateLead: "Dates from",
-  dateMid: "to",
-  dateHint: "Reads only the pages with these dates.",
-  sortDates: "Sort this date range",
 
   readingTitle: "Reading pages…",
   keepTabOpen: "Keep this tab open.",
@@ -393,10 +345,6 @@ const EN = {
   resetBody: "This page was rescanned.",
   noFieldTitle: "⚠ Nothing to sort by yet",
   noFieldBody: "Open the rule menu, choose “Manually select a field”, then click a number on a card.",
-  dateRangeTitle: "⚠ Enter a date range",
-  dateRangeBody: "Fill in at least one date.",
-  noDateTitle: "⚠ No dates found",
-  noDateBody: "Open the rule menu, choose “Manually select a field”, then click a date on a card.",
   noCardsReadTitle: "⚠ No cards read",
   noCardsReadBody: (endedAfter) => `No pages had cards${endedAfter != null ? ` (list may end at page ${endedAfter})` : ""}. Check Pages to read, or retry.`,
   pageNoCardsAfterRetry: (page) => `Page ${page} still had no cards after a retry. Pages read are kept. Try fewer pages, or sort again.`,
@@ -414,8 +362,6 @@ const EN = {
   emptyTitle: "⚠ No cards to sort",
   emptyNoCards: "No cards read yet. Click Rescan.",
   emptyPages: (n) => `Read ${n} cards, none on these pages. Check the range.`,
-  emptyDates: ({ n, range, span }) => `Read ${n} cards, none dated ${range}.${span ? ` Cards read span ${span}.` : ""}`,
-  emptyNoDates: (n) => `Read ${n} cards, but none show a date.`,
   lowCount: ({ parts, max }) => `${parts.map((p) => `Page ${p.page} has only ${p.count} ${plural(p.count, "card", "cards")}`).join("; ")} (others ~${max}). Fine if it's the last page; otherwise some may be missing.`,
   openFailTitle: "⚠ Couldn't open results",
   sortFailTitle: "⚠ Sorting failed",
@@ -423,19 +369,6 @@ const EN = {
   tryAgain: "Try again.",
   gotIt: "Got it",
 
-  dateProbing: (n) => `Finding the pages for your dates… (${n} checked)`,
-  dateLocating: "Finding the pages for your dates…",
-  dateFound: ({ from, to, span }) => `Your dates are on pages ${from}–${to} (${span} ${plural(span, "page", "pages")}). Reading…`,
-  dateAdjust: (page) => `Adjusting: checking page ${page}…`,
-  dateLinear: (max) => `Can't locate dates. Reading from page 1 (max ${max})…`,
-  dateNone: ({ total, range }) => `${total} pages, none in ${range}. Check the dates.`,
-  dateTooMany: ({ from, to, span, max }) => `Dates span pages ${from}–${to} (${span} pages); max ${max} per run. Narrow the dates.`,
-  datePageNoDates: (page) => `Page ${page} has no dates, so the search stopped. Widen the dates, or read by page.`,
-  dateNotFound: ({ page, span }) => `Couldn't find the pages with these dates${page ? ` (last checked page ${page}: ${span})` : ""}. Widen the dates, or read by page.`,
-  dateCap: ({ max, date }) => `Hit the ${max}-page limit before ${date}. Try a later start date.`,
-  dateStoppedAt: (page) => `Stopped at page ${page} (no cards or dates). Pages read are kept.`,
-  dateFailTitle: "⚠ Date read didn't finish",
-  dateFailBody: "Pages read so far are sorted. Try again.",
 
   pickNumber: "Click a number to sort by",
   pickNewRule: (n) => `Click a number to add rule ${n}`,

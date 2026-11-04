@@ -7,7 +7,6 @@ import {
   parseLabeledNumber,
   parseNumber
 } from "../src/core/parsers.js";
-import { analyzePageTargetRange, hasEnoughDateCoverage, locateDateRangePages, verifyDescendingChronology } from "../src/core/crawler.js";
 import { buildFieldCatalog, getDefaultRulesForCatalog, isSortableField } from "../src/core/fields.js";
 import { buildBucketState, getBucketRank } from "../src/core/buckets.js";
 import { applyFiltersAndSort } from "../src/core/sort.js";
@@ -384,101 +383,6 @@ test("empty field catalog does not fake one detected title card", () => {
   const catalog = buildFieldCatalog([]);
   const title = catalog.find((field) => field.id === "title");
   assert.equal(title?.count, 0);
-});
-
-test("reports insufficient date coverage for binary seek samples", () => {
-  assert.equal(
-    hasEnoughDateCoverage([
-      { page: 1, knownDates: 0 },
-      { page: 50, knownDates: 0 },
-      { page: 100, knownDates: 0 }
-    ]),
-    false
-  );
-});
-
-test("marks newer pages as not yet reaching the target date range", () => {
-  const relation = analyzePageTargetRange(
-    [
-      item("newest", 1, "2026-06-15T00:00:00.000Z", 0),
-      item("newer", 1, "2026-06-01T00:00:00.000Z", 1)
-    ],
-    { startDate: "2019-01-31", endDate: "2020-12-30" }
-  );
-
-  assert.equal(relation.relation, "newer-than-target");
-  assert.equal(relation.matchedDates, 0);
-});
-
-test("marks pages inside the target date range", () => {
-  const relation = analyzePageTargetRange(
-    [
-      item("inside", 1, "2020-06-15T00:00:00.000Z", 0),
-      item("also inside", 1, "2019-02-01T00:00:00.000Z", 1)
-    ],
-    { startDate: "2019-01-31", endDate: "2020-12-30" }
-  );
-
-  assert.equal(relation.relation, "intersects-target");
-  assert.equal(relation.matchedDates, 2);
-});
-
-test("marks older pages as past the target date range", () => {
-  const relation = analyzePageTargetRange(
-    [
-      item("old", 1, "2018-12-31T00:00:00.000Z", 0),
-      item("older", 1, "2018-01-01T00:00:00.000Z", 1)
-    ],
-    { startDate: "2019-01-31", endDate: "2020-12-30" }
-  );
-
-  assert.equal(relation.relation, "older-than-target");
-  assert.equal(relation.matchedDates, 0);
-});
-
-test("binary date seek locates the target page range without linear scanning", async () => {
-  const totalPages = 6276;
-  const startDate = "2020-01-01";
-  const endDate = "2020-12-31";
-  const requestedPages = new Set();
-  const located = await locateDateRangePages({
-    totalPages,
-    startDate,
-    endDate,
-    getBounds: async (page) => {
-      requestedPages.add(page);
-      return syntheticDailyBounds(page);
-    }
-  });
-
-  assert.equal(located.targetFound, true);
-  assert.equal(located.targetStartPage, daysBetween("2026-01-01", endDate) + 1);
-  assert.equal(located.targetEndPage, daysBetween("2026-01-01", startDate) + 1);
-  assert.ok(requestedPages.size < 40);
-});
-
-test("binary date seek reports no target pages when range is older than the listing", async () => {
-  const located = await locateDateRangePages({
-    totalPages: 100,
-    startDate: "1999-01-01",
-    endDate: "1999-12-31",
-    getBounds: async (page) => syntheticDailyBounds(page)
-  });
-
-  assert.equal(located.targetFound, false);
-  assert.equal(located.targetStartPage, null);
-  assert.equal(located.targetEndPage, null);
-});
-
-test("chronology verification rejects non-date-sorted page samples", () => {
-  assert.equal(
-    verifyDescendingChronology([
-      syntheticBound(1, "2026-01-01"),
-      syntheticBound(50, "2020-01-01"),
-      syntheticBound(100, "2024-01-01")
-    ]),
-    false
-  );
 });
 
 test("derives page URLs from pagination links", () => {

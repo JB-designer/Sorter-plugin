@@ -33,7 +33,6 @@
     bucketState: null,
     pageRange: null,         // 读取范围控件的状态(src/core/page-range.js)
     editingStart: false,     // "从别的页开始"展开
-    dateMode: false,         // 按日期范围读(旧功能,放在面板底部的链接里)
     collecting: false,
     collectCancelled: false,
     collectProgress: "",
@@ -59,8 +58,8 @@
     anchor: null             // 面板/胶囊的位置(src/core/panel-position.js),拖动松手时保存
   };
 
+  var PAGE_CAP = 100; // 一次最多读 100 页
   var SORT_PRIORITY = ["downloads", "favorites", "likes", "views", "heat", "comments", "endorsements", "score", "dislikes", "fileSize", "price"];
-  var DATE_CRAWL_PAGE_CAP = 100; // 和页码模式一致:一次最多读 100 页
 
   /* ================= 入口与初始化 ================= */
 
@@ -90,7 +89,6 @@
       pagination: await import(url("src/core/pagination.js")),
       pageRange: await import(url("src/core/page-range.js")),
       resultView: await import(url("src/core/result-view.js")),
-      crawler: await import(url("src/core/crawler.js")),
       generic: await import(url("src/core/generic-adapter.js")),
       scrollReader: await import(url("src/core/scroll-reader.js")),
       i18n: await import(url("src/core/i18n.js")),
@@ -131,7 +129,6 @@
     state.readTab = state.noPaging ? "cards" : "pages";
     if (state.noPaging) {
       state.pageRange = core.pageRange.chooseThisPage(state.pageRange);
-      state.dateMode = false;
     }
     state.editingStart = false;
     invalidateResultCache(); // 重新识别/换页 = 输入变了,旧结果缓存不再对应当前选择
@@ -343,10 +340,6 @@
     });
   }
 
-  function hasDateField() {
-    return sortableCandidates().some(function (slot) { return slot.type === "date"; });
-  }
-
   function resetDefaultSortRule() {
     var catalog = fieldCatalog().filter(function (f) { return f.count > 0; });
     if (!catalog.length) { state.sortRules = []; return; }
@@ -373,7 +366,6 @@
   /* ================= 范围 ================= */
 
   function rangeMode() {
-    if (state.dateMode) return "date";
     if (state.readTab === "cards") return "cards";
     var view = core.pageRange.describePageRange(state.pageRange);
     return view.thisOn ? "current" : "pages";
@@ -384,9 +376,9 @@
     var range = state.pageRange;
     return {
       sourceUrl: location.href,
-      scopeFilters: { date: mode === "date", page: mode !== "date", all: false },
-      startDate: mode === "date" ? ui.startDate.value : "",
-      endDate: mode === "date" ? ui.endDate.value : "",
+      scopeFilters: { date: false, page: true, all: false },
+      startDate: "",
+      endDate: "",
       startPage: mode === "current" || mode === "cards" ? state.currentPage : range.start,
       endPage: mode === "current" ? state.currentPage
         : mode === "cards" ? (state.noPaging ? state.currentPage : (state.cardsLastPage || state.currentPage))
@@ -481,18 +473,6 @@
       }
       var okCards = await collectPagesForCards();
       if (!okCards) return;
-    } else if (mode === "date") {
-      if (!ui.startDate.value && !ui.endDate.value) {
-        addNote({ id: "date", tone: "warn", title: t("dateRangeTitle"), body: t("dateRangeBody"), actions: [{ id: "dismiss", label: t("gotIt") }] });
-        return;
-      }
-      if (!hasDateField()) {
-        addNote({ id: "date", tone: "warn", title: t("noDateTitle"), body: t("noDateBody"), actions: [{ id: "dismiss", label: t("gotIt") }] });
-        return;
-      }
-      await autoRemember();
-      var ok = await collectForDateRange();
-      if (!ok) return;
     }
 
     openResults();
@@ -759,268 +739,6 @@
     return low || t("allRead");
   }
 
-  /* ---------------- 收集:日期范围(从第1页往回翻,翻过头就停) ---------------- */
-
-  async function collectForDateRange() {
-    beginCollect();
-    prepareTemplates();
-    var result;
-    try {
-      result = await collectDateRangeInner();
-    } catch (error) {
-      result = {
-        ok: false,
-        message: state.collectCancelled
-          ? t("stoppedKept")
-          : t("dateFailBody")
-      };
-    }
-    endCollect(result.message);
-    if (!result.ok && !state.collectCancelled) {
-      addNote({ id: "error", tone: "warn", title: t("dateFailTitle"), body: result.message, actions: [{ id: "dismiss", label: t("gotIt") }] });
-    }
-    return result.ok;
-  }
-
-  // 日期模式内核:优先二分定位目标页区间(几千页的网站也只需十几次探测);
-  // 网站读不出总页数或列表不按时间排序时,回退为"从第 1 页线性往回收"(原有行为)。
-  async function collectDateRangeInner() {
-    var seek = null;
-    try {
-      setCollectProgress(t("dateLocating"));
-      seek = await core.crawler.seekDateRangePages({
-        sourceUrl: pageOneUrl(),
-        adapter: core.generic.makeGenericAdapter(state.rule),
-        startDate: ui.startDate.value,
-        endDate: ui.endDate.value,
-        requestDelayMs: 400,
-        onSeek: async function (progress) {
-          if (state.collectCancelled) throw new DOMException("已停止", "AbortError");
-          if (progress.phase === "probe") {
-            setCollectProgress(t("dateProbing", progress.requests));
-          } else if (progress.phase === "locating") {
-            setCollectProgress(t("dateLocating"));
-          }
-        }
-      });
-    } catch (error) {
-      if (state.collectCancelled) return { ok: false, message: t("stoppedKept") };
-      seek = null; // 探测过程出错 → 回退线性(下方会提示)
-    }
-
-    if (seek && seek.ok && !seek.targetFound) {
-      return {
-        ok: false,
-        message: t("dateNone", { total: seek.totalPages || "?", range: core.i18n.formatDayRange(ui.startDate.value, ui.endDate.value) })
-      };
-    }
-
-    if (seek && seek.ok && seek.targetFound) {
-      var from = seek.targetStartPage;
-      var to = seek.targetEndPage;
-      var span = to - from + 1;
-      if (span > DATE_CRAWL_PAGE_CAP) {
-        return {
-          ok: false,
-          message: t("dateTooMany", { from: from, to: to, span: span, max: DATE_CRAWL_PAGE_CAP })
-        };
-      }
-      setCollectProgress(t("dateFound", { from: from, to: to, span: span }));
-      var missing = [];
-      for (var n = from; n <= to; n += 1) {
-        if (!state.pagesData.has(n)) missing.push(n);
-      }
-      if (missing.length) {
-        var inner = await collectPagesInner(missing);
-        if (!inner.ok) return inner;
-      }
-
-      // 复核:定位收到的页里必须真的有范围内的卡片;为 0 就自动校正,不再直接放弃
-      var startTime = ui.startDate.value ? new Date(ui.startDate.value + "T00:00:00").getTime() : -Infinity;
-      var endTime = ui.endDate.value ? new Date(ui.endDate.value + "T23:59:59.999").getTime() : Infinity;
-      var hits = 0;
-      for (var p = from; p <= to; p += 1) hits += pageInRangeCount(p, startTime, endTime);
-      if (hits > 0) {
-        return { ok: true, message: t("allRead") };
-      }
-      setCollectProgress(t("dateAdjust", Math.round((from + to) / 2)));
-      return refineDateLocate(Math.round((from + to) / 2), startTime, endTime, seek.totalPages || null);
-    }
-
-    setCollectProgress(t("dateLinear", DATE_CRAWL_PAGE_CAP));
-    return collectLinearDateInner();
-  }
-
-  /* ---------------- 定位自愈(二分初判偏差时的校正) ---------------- */
-
-  // 本地日期 YYYY-MM-DD(toISOString 是 UTC,会让东八区等时区显示成前一天)
-  function isoDay(t) {
-    var d = new Date(t);
-    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-  }
-
-  function pageTimestamps(page) {
-    return (state.pagesData.get(page) || [])
-      .map(function (item) { return Date.parse(item.metrics && item.metrics.uploadDate); })
-      .filter(function (t) { return isFinite(t); });
-  }
-
-  function pageInRangeCount(page, startTime, endTime) {
-    return pageTimestamps(page).filter(function (t) { return t >= startTime && t <= endTime; }).length;
-  }
-
-  // 深层页面常混有"几分钟前"的推荐位,会把二分搜索带偏。
-  // 校正:读当前页的实际日期,与目标日期的偏差 ÷ 该页覆盖的时间密度 → 估算跳几页;最多 8 跳。
-  async function refineDateLocate(startProbe, startTime, endTime, totalPages) {
-    var maxPage = totalPages || Math.max(startProbe + 500, 1000);
-    var targetT;
-    if (isFinite(startTime) && isFinite(endTime)) targetT = (startTime + endTime) / 2;
-    else if (isFinite(startTime)) targetT = startTime + 15 * 86400000;
-    else targetT = endTime - 15 * 86400000;
-
-    var probe = Math.max(1, Math.min(maxPage, startProbe));
-    var visited = {};
-    var lastSpan = null;
-
-    for (var jump = 0; jump < 8 && !state.collectCancelled; jump += 1) {
-      if (!state.pagesData.has(probe)) {
-        var got = await collectPagesInner([probe]);
-        if (!got.ok) return got;
-      }
-      visited[probe] = true;
-      var ts = pageTimestamps(probe);
-      if (!ts.length) {
-        return { ok: false, message: t("datePageNoDates", probe) };
-      }
-      var newest = Math.max.apply(null, ts);
-      var oldest = Math.min.apply(null, ts);
-      lastSpan = { page: probe, newest: newest, oldest: oldest };
-
-      if (pageInRangeCount(probe, startTime, endTime) > 0) {
-        return expandAroundHit(probe, startTime, endTime, maxPage);
-      }
-
-      var pageT = (newest + oldest) / 2;
-      var perPageMs = Math.max(newest - oldest, 3600000); // 每页至少按 1 小时的跨度算,防止除零
-      var delta = Math.round((pageT - targetT) / perPageMs); // 页面日期比目标新 → 往更深(页码更大)跳
-      if (!delta) delta = pageT > targetT ? 1 : -1;
-      var next = Math.max(1, Math.min(maxPage, probe + delta));
-      while (visited[next]) {
-        next += delta > 0 ? 1 : -1;
-        if (next < 1 || next > maxPage) return refineFailure(lastSpan);
-      }
-      probe = next;
-      setCollectProgress(t("dateAdjust", probe));
-    }
-    if (state.collectCancelled) return { ok: false, message: t("stoppedKept") };
-    return refineFailure(lastSpan);
-  }
-
-  function refineFailure(lastSpan) {
-    return {
-      ok: false,
-      message: t("dateNotFound", lastSpan ? { page: lastSpan.page, span: core.i18n.formatDayRange(isoDay(lastSpan.oldest), isoDay(lastSpan.newest)) } : {})
-    };
-  }
-
-  // 命中范围内的页后,向两侧扩展收齐所有仍在范围内的相邻页(两侧合计不超过 DATE_CRAWL_PAGE_CAP 页)
-  async function expandAroundHit(hitPage, startTime, endTime, maxPage) {
-    var collected = [hitPage];
-    for (var dir = -1; dir <= 1; dir += 2) {
-      var page = hitPage + dir;
-      while (page >= 1 && page <= maxPage && collected.length < DATE_CRAWL_PAGE_CAP && !state.collectCancelled) {
-        if (!state.pagesData.has(page)) {
-          var got = await collectPagesInner([page]);
-          if (!got.ok) break; // 扩展途中失败不致命:收到哪算哪,已收的页保留
-        }
-        if (pageInRangeCount(page, startTime, endTime) === 0) break;
-        collected.push(page);
-        page += dir;
-      }
-    }
-    if (state.collectCancelled) return { ok: false, message: t("stoppedKept") };
-    collected.sort(function (a, b) { return a - b; });
-    return {
-      ok: true,
-      message: t("allRead")
-    };
-  }
-
-  // 线性回收内核(回退路径,即原有行为):从第 1 页收到"翻过起始日期"为止,并明确说出停止原因
-  async function collectLinearDateInner() {
-    var startTime = ui.startDate.value ? new Date(ui.startDate.value + "T00:00:00").getTime() : -Infinity;
-    var suspicious = false;
-    var page = 1;
-    var collectedAny = false;
-    var stopMessage = "";
-
-    while (page <= DATE_CRAWL_PAGE_CAP && !state.collectCancelled) {
-      var items;
-      if (state.pagesData.has(page)) {
-        items = state.pagesData.get(page);
-      } else {
-        setCollectProgress(t("progressSimple", page));
-        if (!suspicious) {
-          var outcome = await fetchAndExtract(urlFor(page), page);
-          if (outcome.error || isSuspicious(outcome)) {
-            suspicious = true;
-            setCollectProgress(t("backgroundTab"));
-            continue; // 同一页用后台方式重收
-          }
-          items = outcome.items;
-        } else {
-          items = null;
-          for (var attempt = 0; attempt < 2 && !state.collectCancelled; attempt += 1) {
-            if (attempt) setCollectProgress(t("pageRetry", page));
-            var results = await crawlViaTabs([{ page: page, url: urlFor(page) }]);
-            var got = results[page] || { items: [], error: "" };
-            items = got.items || [];
-            if (items.length) break;
-          }
-          if (state.collectCancelled) break;
-          if (!items.length) {
-            return {
-              ok: collectedAny,
-              message: t("dateStoppedAt", page)
-            };
-          }
-        }
-        var dupPage = looksLikeExistingPage(items);
-        if (dupPage != null && dupPage !== page) {
-          if (advanceTemplate()) {
-            setCollectProgress(t("dupRetry", { page: page, dup: dupPage }));
-            await sleep(300);
-            continue; // 换模板重收同一页
-          }
-          return { ok: false, message: paginationFailedText(page, dupPage) };
-        }
-        storePage(page, items);
-        if (!suspicious) await sleep(400);
-      }
-      collectedAny = true;
-
-      // 早停:这一页的日期全部老于起始日期,再往后只会更老
-      var timestamps = items
-        .map(function (item) { return Date.parse(item.metrics && item.metrics.uploadDate); })
-        .filter(function (value) { return isFinite(value); });
-      if (timestamps.length && Math.max.apply(null, timestamps) < startTime) {
-        stopMessage = t("allRead");
-        break;
-      }
-      if (!timestamps.length && page > 3) {
-        stopMessage = t("dateStoppedAt", page);
-        break;
-      }
-      page += 1;
-    }
-
-    if (state.collectCancelled) return { ok: false, message: t("stoppedKept") };
-    if (!stopMessage && page > DATE_CRAWL_PAGE_CAP) {
-      stopMessage = t("dateCap", { max: DATE_CRAWL_PAGE_CAP, date: core.i18n.formatDay(ui.startDate.value) });
-    }
-    return { ok: collectedAny, message: stopMessage || t("allRead") };
-  }
-
   /* ---------------- 收集底层 ---------------- */
 
   // 读取中关闭或刷新标签页会丢掉所有已读的页:浏览器弹"离开此网站?"确认。
@@ -1174,7 +892,7 @@
   async function collectPagesForCards() {
     var target = state.cardTarget;
     var from = state.currentPage;
-    var last = from + DATE_CRAWL_PAGE_CAP - 1;
+    var last = from + PAGE_CAP - 1;
     if (state.totalPages) last = Math.min(last, Math.max(from, state.totalPages));
     function counted() {
       var seen = {};
@@ -1681,21 +1399,6 @@
 
   /* ================= 打开结果 ================= */
 
-  // 收集池的日期覆盖范围(诊断用):null 表示一张都没读出日期
-  function poolDateCoverage() {
-    var min = Infinity;
-    var max = -Infinity;
-    pool().forEach(function (item) {
-      var t = Date.parse(item.metrics && item.metrics.uploadDate);
-      if (isFinite(t)) {
-        if (t < min) min = t;
-        if (t > max) max = t;
-      }
-    });
-    if (!isFinite(min)) return null;
-    return { min: isoDay(min), max: isoDay(max) };
-  }
-
   function sortedPages(sorted) {
     var seen = {};
     sorted.forEach(function (item) { if (item.sourcePage != null) seen[item.sourcePage] = true; });
@@ -1747,11 +1450,6 @@
       var body;
       if (!raw) {
         body = t("emptyNoCards");
-      } else if (rangeMode() === "date") {
-        var coverage = poolDateCoverage();
-        body = coverage
-          ? t("emptyDates", { n: raw, range: core.i18n.formatDayRange(ui.startDate.value, ui.endDate.value), span: core.i18n.formatDayRange(coverage.min, coverage.max) })
-          : t("emptyNoDates", raw);
       } else {
         body = t("emptyPages", raw);
       }
@@ -1994,7 +1692,6 @@
     ".cov{font-size:11px;color:var(--warning);background:var(--warningSoft);border-radius:4px;padding:0 5px;white-space:nowrap}",
     ".msep{border-top:1px solid var(--border);margin:4px 0}",
     ".add{margin:0 0 12px}",
-    ".datebox input{border:1px solid var(--border);border-radius:6px;padding:3px 6px;font:inherit;color:var(--text);background:var(--field)}",
     ".top5{margin-top:8px;border:1px solid var(--border);border-radius:10px;background:var(--field);padding:2px 10px 8px}",
     ".div{display:flex;align-items:center;gap:8px;margin:8px 0 4px;font-size:12px;color:var(--text3)}",
     ".div::after{content:'';flex:1;border-top:1px solid var(--border)}",
@@ -2088,7 +1785,6 @@
       '</div>' +
       '<div class="foot">' +
       '  <button class="link" data-act="redetect">' + esc(t("rescan")) + '</button>' +
-      '  <button class="link" data-act="dateMode" data-el="dateLink">' + esc(t("readByDate")) + '</button>' +
       '  <button class="link" data-act="forget">' + esc(t("resetSite")) + '</button>' +
       '</div>';
     shadow.appendChild(panel);
@@ -2246,7 +1942,6 @@
       var tab = target.getAttribute("data-tab");
       if (tab === state.readTab) return;
       state.readTab = tab;
-      if (tab === "cards") state.dateMode = false;
       invalidateResultCache();
       renderRange();
       renderCta();
@@ -2265,12 +1960,6 @@
         if (state.collecting) endCollect("");
         addNote({ id: "error", tone: "warn", title: t("sortFailTitle"), body: t("tryAgain"), actions: [{ id: "dismiss", label: t("gotIt") }] });
       });
-    }
-    else if (act === "dateMode") {
-      state.dateMode = !state.dateMode;
-      invalidateResultCache();
-      renderRange();
-      renderCta();
     }
     else if (act === "note") {
       var noteId = target.getAttribute("data-note");
@@ -2711,12 +2400,8 @@
     var box = ui.rangeBox;
     if (!box || !state.pageRange) return;
     box.innerHTML = "";
-    if (ui.dateLink) {
-      ui.dateLink.textContent = t(state.dateMode ? "readByPage" : "readByDate");
-      ui.dateLink.style.display = state.noPaging || state.readTab === "cards" ? "none" : "";
-    }
-    if (!state.dateMode) box.appendChild(renderTabs());
-    if (!state.dateMode && state.readTab === "cards") {
+    box.appendChild(renderTabs());
+    if (state.readTab === "cards") {
       box.className = "box";
       renderCardsRange(box);
       return;
@@ -2727,30 +2412,6 @@
       fixed.appendChild(el("b", "fixedv", t("fixedOnePage")));
       box.appendChild(fixed);
       box.appendChild(el("div", "hint", t("fixedOnePageHint", state.cardCount)));
-      return;
-    }
-    if (state.dateMode) {
-      box.className = "box datebox";
-      var dateLine = el("div", "line");
-      dateLine.appendChild(document.createTextNode(t("dateLead")));
-      var start = document.createElement("input");
-      start.type = "date";
-      start.value = state.startDateValue || "";
-      var end = document.createElement("input");
-      end.type = "date";
-      end.value = state.endDateValue || "";
-      [start, end].forEach(function (input) {
-        input.addEventListener("change", function () {
-          state.startDateValue = start.value;
-          state.endDateValue = end.value;
-          invalidateResultCache();
-        });
-      });
-      dateLine.append(start, document.createTextNode(t("dateMid")), end);
-      box.appendChild(dateLine);
-      box.appendChild(el("div", "hint", t("dateHint")));
-      ui.startDate = start;
-      ui.endDate = end;
       return;
     }
     box.className = "box";
@@ -2933,22 +2594,18 @@
     button.disabled = false;
     // 刚排好且没有改动:前 5 名下面有「打开完整结果」,主按钮先藏起来;改了设置后再出现
     button.style.display = (state.lastResultId && state.summary && !state.collecting) || scrollActive() ? "none" : "";
-    if (state.readTab === "cards" && !state.dateMode && !state.collecting) {
+    if (state.readTab === "cards" && !state.collecting) {
       button.textContent = t("sortCards", state.cardTarget);
       button.disabled = !state.cardCount;
       return;
     }
-    if (state.noPaging && !state.dateMode && !state.collecting) {
+    if (state.noPaging && !state.collecting) {
       button.textContent = t("sortLoaded", state.cardCount);
       button.disabled = !state.cardCount;
       return;
     }
     if (state.collecting) {
       button.textContent = t("stopAndSort");
-      return;
-    }
-    if (state.dateMode) {
-      button.textContent = t("sortDates");
       return;
     }
     var view = core.pageRange.describePageRange(state.pageRange);
